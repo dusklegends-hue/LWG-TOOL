@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Champion Pool Manager</title>
+<title>LWG Team Tool</title>
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <header class="topbar">
-    <h1>Champion Pool Manager</h1>
+    <h1>LWG Team Tool</h1>
     <span id="patchBadge" class="patch-badge">loading…</span>
   </header>
 
@@ -19,7 +19,7 @@
 
   <main id="app" class="app hidden">
     <aside class="sidebar">
-      <h2>People</h2>
+      <h2>Players</h2>
       <form id="addPersonForm" class="add-person-form">
         <input id="newPersonName" type="text" placeholder="Name…" autocomplete="off" required />
         <input id="newPersonOpgg" type="text" placeholder="na.op.gg link (optional)" autocomplete="off" />
@@ -37,7 +37,7 @@
 
       <div id="poolTab" class="tab-panel active">
         <div id="noPersonSelected" class="empty-state">
-          <p>Select or add a person to manage their champion pool.</p>
+          <p>Select or add a player to manage their champion pool.</p>
         </div>
 
         <div id="personPool" class="person-pool hidden">
@@ -74,6 +74,7 @@
           <input id="newEventTitle" type="text" placeholder="Event title…" autocomplete="off" required />
           <input id="newEventDate" type="date" required />
           <input id="newEventTime" type="time" />
+          <select id="newEventTimezone"></select>
           <input id="newEventNotes" type="text" placeholder="Notes (optional)" autocomplete="off" />
           <button type="submit">Add Event</button>
         </form>

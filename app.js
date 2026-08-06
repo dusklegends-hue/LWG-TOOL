@@ -90,6 +90,9 @@ const COMMON_ROLES = {
 // Champion class tags — sourced live from Data Dragon (champion.tags), zero maintenance.
 const CLASSES = ["Fighter", "Tank", "Mage", "Assassin", "Support", "Marksman"];
 
+const DEFAULT_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const TIMEZONES = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : [DEFAULT_TIMEZONE];
+
 let state = {
   people: [], // populated live from Firestore's "people" collection — shared across everyone
   selectedPersonId: null, // local-only UI preference (which tab you're viewing), not shared
@@ -108,6 +111,8 @@ const classFilters = new Set(); // active "Class" filter chips
 let events = []; // populated live from Firestore's "events" collection — shared across everyone
 let calendarViewDate = new Date(new Date().getFullYear(), new Date().getMonth(), 1); // local-only, which month is showing
 let selectedCalendarDate = null; // local-only, "YYYY-MM-DD" of the day expanded below the grid
+let editingEventId = null; // event id whose fields are mid-edit, or null
+let eventDraft = null; // { title, date, time, timezone, notes } — in-progress (unsaved) values while editing
 
 const els = {};
 
@@ -202,6 +207,7 @@ function cacheEls() {
   els.newEventTitle = document.getElementById("newEventTitle");
   els.newEventDate = document.getElementById("newEventDate");
   els.newEventTime = document.getElementById("newEventTime");
+  els.newEventTimezone = document.getElementById("newEventTimezone");
   els.newEventNotes = document.getElementById("newEventNotes");
   els.calendarMonthLabel = document.getElementById("calendarMonthLabel");
   els.prevMonthBtn = document.getElementById("prevMonthBtn");
@@ -232,14 +238,23 @@ function bindStaticEvents() {
   renderFilterChips(els.laneFilterChips, LANES, laneFilters);
   renderFilterChips(els.classFilterChips, CLASSES, classFilters);
 
+  TIMEZONES.forEach((tz) => {
+    const opt = document.createElement("option");
+    opt.value = tz;
+    opt.textContent = tz;
+    els.newEventTimezone.appendChild(opt);
+  });
+  els.newEventTimezone.value = DEFAULT_TIMEZONE;
+
   els.addEventForm.addEventListener("submit", (e) => {
     e.preventDefault();
     const title = els.newEventTitle.value.trim();
     const date = els.newEventDate.value;
     if (!title || !date) return;
     const time = els.newEventTime.value;
+    const timezone = els.newEventTimezone.value || DEFAULT_TIMEZONE;
     const notes = els.newEventNotes.value.trim();
-    addEvent(title, date, time, notes);
+    addEvent(title, date, time, timezone, notes);
     els.newEventTitle.value = "";
     els.newEventTime.value = "";
     els.newEventNotes.value = "";
@@ -363,7 +378,7 @@ async function addPerson(name, opgg) {
     await setDoc(personDoc(id), { name, opgg: normalizeUrl(opgg), pool: [] });
   } catch (err) {
     console.error(err);
-    alert("Could not add that person — check your connection and try again.");
+    alert("Could not add that player — check your connection and try again.");
     if (state.selectedPersonId === id) {
       state.selectedPersonId = null;
       saveLocalUIState();
@@ -382,7 +397,7 @@ async function removePerson(id) {
     await deleteDoc(personDoc(id));
   } catch (err) {
     console.error(err);
-    alert("Could not remove that person — check your connection and try again.");
+    alert("Could not remove that player — check your connection and try again.");
   }
 }
 
@@ -413,14 +428,30 @@ function updatePoolEntry(person, championId, changes) {
 
 /* ---------- Events ---------- */
 
-async function addEvent(title, date, time, notes) {
+async function addEvent(title, date, time, timezone, notes) {
   const id = crypto.randomUUID();
   selectedCalendarDate = date;
   try {
-    await setDoc(eventDoc(id), { title, date, time: time || null, notes: notes || null, attendees: [] });
+    await setDoc(eventDoc(id), {
+      title,
+      date,
+      time: time || null,
+      timezone: timezone || DEFAULT_TIMEZONE,
+      notes: notes || null,
+      attendees: [],
+    });
   } catch (err) {
     console.error(err);
     alert("Could not add that event — check your connection and try again.");
+  }
+}
+
+async function updateEvent(id, changes) {
+  try {
+    await updateDoc(eventDoc(id), changes);
+  } catch (err) {
+    console.error(err);
+    alert("Could not save that event — check your connection and try again.");
   }
 }
 
@@ -699,7 +730,7 @@ function renderOverviewTab() {
   els.coverageTable.innerHTML = "";
 
   if (state.people.length === 0) {
-    els.coverageTable.innerHTML = `<p class="empty-state">Add people to see role coverage.</p>`;
+    els.coverageTable.innerHTML = `<p class="empty-state">Add players to see role coverage.</p>`;
     return;
   }
 
@@ -717,7 +748,7 @@ function renderOverviewTab() {
   const table = document.createElement("table");
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  headRow.innerHTML = `<th>Person</th>` + ROLES.map((r) => `<th>${r}</th>`).join("");
+  headRow.innerHTML = `<th>Player</th>` + ROLES.map((r) => `<th>${r}</th>`).join("");
   thead.appendChild(headRow);
   table.appendChild(thead);
 
@@ -787,6 +818,17 @@ function formatTime(time24) {
   const period = h >= 12 ? "PM" : "AM";
   const h12 = h % 12 || 12;
   return `${h12}:${String(m).padStart(2, "0")} ${period}`;
+}
+
+function formatTimezoneAbbr(dateStr, tz) {
+  try {
+    const date = new Date(`${dateStr}T12:00:00`);
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "short" }).formatToParts(date);
+    const tzPart = parts.find((p) => p.type === "timeZoneName");
+    return tzPart ? tzPart.value : tz;
+  } catch {
+    return tz;
+  }
 }
 
 function renderCalendarTab() {
@@ -890,54 +932,162 @@ function renderDayDetailPanel() {
   [...dayEvents]
     .sort((a, b) => (a.time || "").localeCompare(b.time || ""))
     .forEach((ev) => {
-      const card = document.createElement("div");
-      card.className = "event-card";
-
-      const header = document.createElement("div");
-      header.className = "event-card-header";
-      const titleEl = document.createElement("strong");
-      titleEl.textContent = ev.time ? `${formatTime(ev.time)} — ${ev.title}` : ev.title;
-
-      const deleteBtn = document.createElement("button");
-      deleteBtn.type = "button";
-      deleteBtn.className = "remove-event";
-      deleteBtn.textContent = "×";
-      deleteBtn.title = "Delete event";
-      deleteBtn.addEventListener("click", () => {
-        if (confirm(`Delete "${ev.title}"?`)) deleteEvent(ev.id);
-      });
-
-      header.append(titleEl, deleteBtn);
-      card.appendChild(header);
-
-      if (ev.notes) {
-        const notesEl = document.createElement("p");
-        notesEl.className = "event-notes";
-        notesEl.textContent = ev.notes;
-        card.appendChild(notesEl);
-      }
-
-      const attendeeWrap = document.createElement("div");
-      attendeeWrap.className = "attendee-list";
-      if (state.people.length === 0) {
-        const p = document.createElement("p");
-        p.className = "no-champs";
-        p.textContent = "Add people first to mark attendance.";
-        attendeeWrap.appendChild(p);
-      } else {
-        state.people.forEach((person) => {
-          const label = document.createElement("label");
-          label.className = "attendee-chip";
-          const checkbox = document.createElement("input");
-          checkbox.type = "checkbox";
-          checkbox.checked = (ev.attendees || []).includes(person.id);
-          checkbox.addEventListener("change", () => toggleAttendee(ev, person.id));
-          label.append(checkbox, document.createTextNode(person.name));
-          attendeeWrap.appendChild(label);
-        });
-      }
-      card.appendChild(attendeeWrap);
-
-      els.dayDetailEvents.appendChild(card);
+      const node = editingEventId === ev.id ? buildEventEditForm(ev) : buildEventDisplayCard(ev);
+      els.dayDetailEvents.appendChild(node);
     });
+}
+
+function buildEventDisplayCard(ev) {
+  const card = document.createElement("div");
+  card.className = "event-card";
+
+  const header = document.createElement("div");
+  header.className = "event-card-header";
+  const titleEl = document.createElement("strong");
+  const tzAbbr = formatTimezoneAbbr(ev.date, ev.timezone || DEFAULT_TIMEZONE);
+  titleEl.textContent = ev.time ? `${formatTime(ev.time)} ${tzAbbr} — ${ev.title}` : ev.title;
+
+  const actions = document.createElement("div");
+  actions.className = "event-card-actions";
+
+  const editBtn = document.createElement("button");
+  editBtn.type = "button";
+  editBtn.className = "edit-event";
+  editBtn.textContent = "edit";
+  editBtn.addEventListener("click", () => {
+    editingEventId = ev.id;
+    eventDraft = {
+      title: ev.title,
+      date: ev.date,
+      time: ev.time || "",
+      timezone: ev.timezone || DEFAULT_TIMEZONE,
+      notes: ev.notes || "",
+    };
+    renderDayDetailPanel();
+  });
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "remove-event";
+  deleteBtn.textContent = "×";
+  deleteBtn.title = "Delete event";
+  deleteBtn.addEventListener("click", () => {
+    if (confirm(`Delete "${ev.title}"?`)) deleteEvent(ev.id);
+  });
+
+  actions.append(editBtn, deleteBtn);
+  header.append(titleEl, actions);
+  card.appendChild(header);
+
+  if (ev.notes) {
+    const notesEl = document.createElement("p");
+    notesEl.className = "event-notes";
+    notesEl.textContent = ev.notes;
+    card.appendChild(notesEl);
+  }
+
+  const attendeeWrap = document.createElement("div");
+  attendeeWrap.className = "attendee-list";
+  if (state.people.length === 0) {
+    const p = document.createElement("p");
+    p.className = "no-champs";
+    p.textContent = "Add players first to mark attendance.";
+    attendeeWrap.appendChild(p);
+  } else {
+    state.people.forEach((person) => {
+      const label = document.createElement("label");
+      label.className = "attendee-chip";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = (ev.attendees || []).includes(person.id);
+      checkbox.addEventListener("change", () => toggleAttendee(ev, person.id));
+      label.append(checkbox, document.createTextNode(person.name));
+      attendeeWrap.appendChild(label);
+    });
+  }
+  card.appendChild(attendeeWrap);
+
+  return card;
+}
+
+function buildEventEditForm(ev) {
+  const card = document.createElement("div");
+  card.className = "event-card";
+
+  const form = document.createElement("form");
+  form.className = "event-edit-form";
+
+  const titleInput = document.createElement("input");
+  titleInput.type = "text";
+  titleInput.required = true;
+  titleInput.value = eventDraft.title;
+  titleInput.addEventListener("input", () => (eventDraft.title = titleInput.value));
+
+  const dateInput = document.createElement("input");
+  dateInput.type = "date";
+  dateInput.required = true;
+  dateInput.value = eventDraft.date;
+  dateInput.addEventListener("input", () => (eventDraft.date = dateInput.value));
+
+  const timeInput = document.createElement("input");
+  timeInput.type = "time";
+  timeInput.value = eventDraft.time;
+  timeInput.addEventListener("input", () => (eventDraft.time = timeInput.value));
+
+  const tzSelect = document.createElement("select");
+  TIMEZONES.forEach((tz) => {
+    const opt = document.createElement("option");
+    opt.value = tz;
+    opt.textContent = tz;
+    if (tz === eventDraft.timezone) opt.selected = true;
+    tzSelect.appendChild(opt);
+  });
+  tzSelect.addEventListener("change", () => (eventDraft.timezone = tzSelect.value));
+
+  const notesInput = document.createElement("input");
+  notesInput.type = "text";
+  notesInput.placeholder = "Notes (optional)";
+  notesInput.value = eventDraft.notes;
+  notesInput.addEventListener("input", () => (eventDraft.notes = notesInput.value));
+
+  const actions = document.createElement("div");
+  actions.className = "event-edit-actions";
+
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "submit";
+  saveBtn.textContent = "Save";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.addEventListener("click", () => {
+    editingEventId = null;
+    eventDraft = null;
+    renderDayDetailPanel();
+  });
+
+  actions.append(saveBtn, cancelBtn);
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const title = eventDraft.title.trim();
+    const date = eventDraft.date;
+    if (!title || !date) return;
+    const changes = {
+      title,
+      date,
+      time: eventDraft.time || null,
+      timezone: eventDraft.timezone || DEFAULT_TIMEZONE,
+      notes: eventDraft.notes.trim() || null,
+    };
+    selectedCalendarDate = date;
+    editingEventId = null;
+    eventDraft = null;
+    renderDayDetailPanel();
+    updateEvent(ev.id, changes);
+  });
+
+  form.append(titleInput, dateInput, timeInput, tzSelect, notesInput, actions);
+  card.appendChild(form);
+  return card;
 }

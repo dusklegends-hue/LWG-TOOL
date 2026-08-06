@@ -563,13 +563,21 @@ h3 {
 }
 
 .add-event-form input[type="date"],
-.add-event-form input[type="time"] {
+.add-event-form input[type="time"],
+.add-event-form select,
+.event-edit-form input[type="date"],
+.event-edit-form input[type="time"],
+.event-edit-form select {
   background: var(--bg-panel-2);
   border: 1px solid var(--border);
   color: var(--text);
   padding: 8px 10px;
   border-radius: var(--radius);
   font-size: 0.9rem;
+}
+
+.add-event-form select {
+  max-width: 220px;
 }
 
 .add-event-form button {
@@ -712,6 +720,50 @@ h3 {
 .remove-event:hover {
   color: var(--danger);
   border: none;
+}
+
+.event-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.edit-event {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  text-decoration: underline;
+  padding: 0 4px;
+}
+
+.edit-event:hover {
+  color: var(--gold-bright);
+  border: none;
+}
+
+.event-edit-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.event-edit-form input[type="text"] {
+  flex: 1;
+  min-width: 140px;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+}
+
+.event-edit-form .event-edit-actions {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  justify-content: flex-end;
 }
 
 .event-notes {
