@@ -39,6 +39,21 @@ html, body {
   letter-spacing: 0.5px;
 }
 
+.mobile-menu-btn {
+  display: none;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--gold-bright);
+  font-size: 1.1rem;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  line-height: 1;
+}
+
+.sidebar-overlay {
+  display: none;
+}
+
 .patch-badge {
   font-size: 0.75rem;
   color: var(--bg);
@@ -225,6 +240,8 @@ button:hover {
   gap: 4px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 20px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .tab-btn {
@@ -235,6 +252,8 @@ button:hover {
   padding: 10px 16px;
   color: var(--text-dim);
   font-size: 0.9rem;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .tab-btn:hover {
@@ -1129,4 +1148,142 @@ h3 {
   color: var(--text-dim);
   font-size: 0.78rem;
   margin-top: 2px;
+}
+
+/* ---------- Mobile ---------- */
+
+@media (max-width: 768px) {
+  .topbar {
+    padding: 10px 14px;
+    gap: 10px;
+  }
+
+  .topbar h1 {
+    font-size: 1.05rem;
+  }
+
+  .mobile-menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .app {
+    grid-template-columns: 1fr;
+    height: calc(100vh - 50px);
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(300px, 85vw);
+    z-index: 101;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: 6px 0 24px rgba(0, 0, 0, 0.6);
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .sidebar-overlay.visible {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 100;
+  }
+
+  .main-panel {
+    padding: 16px;
+  }
+
+  .champion-grid {
+    grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+    gap: 8px;
+  }
+
+  .champ-icon img {
+    width: 52px;
+    height: 52px;
+  }
+
+  .add-person-form,
+  .add-event-form,
+  .add-comp-form {
+    max-width: none;
+  }
+
+  .add-event-form input[type="text"],
+  .add-event-form input[type="date"],
+  .add-event-form input[type="time"],
+  .add-event-form select {
+    width: 100%;
+  }
+
+  .calendar-grid {
+    gap: 3px;
+  }
+
+  .calendar-day {
+    min-height: 56px;
+    padding: 3px;
+  }
+
+  .calendar-header {
+    gap: 10px;
+  }
+
+  .calendar-header h2 {
+    min-width: 0;
+    font-size: 1rem;
+  }
+
+  .calendar-event-chip {
+    font-size: 0.6rem;
+    padding: 0 3px;
+  }
+
+  .ranked-cards {
+    flex-direction: column;
+  }
+
+  .ranked-card {
+    min-width: 0;
+  }
+
+  .match-card {
+    flex-wrap: wrap;
+  }
+
+  .comp-role-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .comp-role-label-wrap {
+    padding-top: 0;
+  }
+
+  .comp-champ-picker input[type="text"] {
+    max-width: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .calendar-weekday {
+    font-size: 0.62rem;
+  }
+
+  .calendar-day-number {
+    font-size: 0.7rem;
+  }
+
+  .calendar-event-more {
+    display: none;
+  }
 }

@@ -8,6 +8,7 @@
 </head>
 <body>
   <header class="topbar">
+    <button id="mobileMenuBtn" type="button" class="mobile-menu-btn" aria-label="Toggle players list">☰</button>
     <h1>LWG Team Tool</h1>
     <span id="patchBadge" class="patch-badge">loading…</span>
   </header>
@@ -18,7 +19,8 @@
   </div>
 
   <main id="app" class="app hidden">
-    <aside class="sidebar">
+    <div id="sidebarOverlay" class="sidebar-overlay"></div>
+    <aside id="sidebar" class="sidebar">
       <h2>Players</h2>
       <form id="addPersonForm" class="add-person-form">
         <input id="newPersonName" type="text" placeholder="Name…" autocomplete="off" required />

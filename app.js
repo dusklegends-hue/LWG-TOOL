@@ -239,6 +239,9 @@ async function init() {
 function cacheEls() {
   els.app = document.getElementById("app");
   els.patchBadge = document.getElementById("patchBadge");
+  els.mobileMenuBtn = document.getElementById("mobileMenuBtn");
+  els.sidebar = document.getElementById("sidebar");
+  els.sidebarOverlay = document.getElementById("sidebarOverlay");
   els.addPersonForm = document.getElementById("addPersonForm");
   els.newPersonName = document.getElementById("newPersonName");
   els.newPersonOpgg = document.getElementById("newPersonOpgg");
@@ -284,6 +287,9 @@ function cacheEls() {
 }
 
 function bindStaticEvents() {
+  els.mobileMenuBtn.addEventListener("click", () => setSidebarOpen(true));
+  els.sidebarOverlay.addEventListener("click", () => setSidebarOpen(false));
+
   els.addPersonForm.addEventListener("submit", (e) => {
     e.preventDefault();
     const name = els.newPersonName.value.trim();
@@ -521,6 +527,12 @@ function selectPerson(id) {
   saveLocalUIState();
   renderPeopleList();
   renderPoolTab();
+  setSidebarOpen(false);
+}
+
+function setSidebarOpen(open) {
+  els.sidebar.classList.toggle("open", open);
+  els.sidebarOverlay.classList.toggle("visible", open);
 }
 
 function getSelectedPerson() {
