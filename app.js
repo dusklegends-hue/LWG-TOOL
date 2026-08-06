@@ -21,9 +21,14 @@ const firebaseConfig = {
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 const peopleCol = collection(db, "people");
+const eventsCol = collection(db, "events");
 
 function personDoc(id) {
   return doc(peopleCol, id);
+}
+
+function eventDoc(id) {
+  return doc(eventsCol, id);
 }
 
 const ROLES = ["Top", "Jungle", "Mid", "ADC", "Support", "Fill"];
@@ -100,6 +105,10 @@ let opggDraftValue = ""; // in-progress (unsaved) text for that edit
 const laneFilters = new Set(); // active "Lane" filter chips
 const classFilters = new Set(); // active "Class" filter chips
 
+let events = []; // populated live from Firestore's "events" collection — shared across everyone
+let calendarViewDate = new Date(new Date().getFullYear(), new Date().getMonth(), 1); // local-only, which month is showing
+let selectedCalendarDate = null; // local-only, "YYYY-MM-DD" of the day expanded below the grid
+
 const els = {};
 
 if (firebaseConfig.apiKey === "REPLACE_ME") {
@@ -115,13 +124,14 @@ async function init() {
   bindStaticEvents();
 
   let championDataError = null;
-  let snapshotError = null;
+  let peopleSnapshotError = null;
+  let eventsSnapshotError = null;
 
   const championPromise = loadChampionData().catch((err) => {
     championDataError = err;
   });
 
-  const firstSnapshotPromise = new Promise((resolve) => {
+  const firstPeopleSnapshotPromise = new Promise((resolve) => {
     onSnapshot(
       peopleCol,
       (snapshot) => {
@@ -129,26 +139,41 @@ async function init() {
         resolve();
       },
       (err) => {
-        snapshotError = err;
+        peopleSnapshotError = err;
         resolve();
       }
     );
   });
 
-  await Promise.all([championPromise, firstSnapshotPromise]);
+  const firstEventsSnapshotPromise = new Promise((resolve) => {
+    onSnapshot(
+      eventsCol,
+      (snapshot) => {
+        handleEventsSnapshot(snapshot);
+        resolve();
+      },
+      (err) => {
+        eventsSnapshotError = err;
+        resolve();
+      }
+    );
+  });
 
-  if (championDataError || snapshotError) {
+  await Promise.all([championPromise, firstPeopleSnapshotPromise, firstEventsSnapshotPromise]);
+
+  if (championDataError || peopleSnapshotError || eventsSnapshotError) {
     document.getElementById("loadingScreen").innerHTML =
       `<p style="color:#e05252">${championDataError ? "Failed to load champion data." : "Failed to connect to the shared roster."} Check your internet connection and reload.</p>`;
-    console.error(championDataError || snapshotError);
+    console.error(championDataError || peopleSnapshotError || eventsSnapshotError);
     return;
   }
 
-  // Re-render now that champion data and the roster are both guaranteed loaded,
-  // in case the first roster snapshot arrived before champion data finished fetching.
+  // Re-render now that champion data, the roster, and events are all guaranteed loaded,
+  // in case a snapshot arrived before champion data finished fetching.
   renderPeopleList();
   renderPoolTab();
   renderOverviewTab();
+  renderCalendarTab();
 
   document.getElementById("loadingScreen").classList.add("hidden");
   els.app.classList.remove("hidden");
@@ -173,6 +198,18 @@ function cacheEls() {
   els.coverageWarnings = document.getElementById("coverageWarnings");
   els.coverageTable = document.getElementById("coverageTable");
   els.championIconTemplate = document.getElementById("championIconTemplate");
+  els.addEventForm = document.getElementById("addEventForm");
+  els.newEventTitle = document.getElementById("newEventTitle");
+  els.newEventDate = document.getElementById("newEventDate");
+  els.newEventTime = document.getElementById("newEventTime");
+  els.newEventNotes = document.getElementById("newEventNotes");
+  els.calendarMonthLabel = document.getElementById("calendarMonthLabel");
+  els.prevMonthBtn = document.getElementById("prevMonthBtn");
+  els.nextMonthBtn = document.getElementById("nextMonthBtn");
+  els.calendarGrid = document.getElementById("calendarGrid");
+  els.dayDetailPanel = document.getElementById("dayDetailPanel");
+  els.dayDetailTitle = document.getElementById("dayDetailTitle");
+  els.dayDetailEvents = document.getElementById("dayDetailEvents");
 }
 
 function bindStaticEvents() {
@@ -194,6 +231,29 @@ function bindStaticEvents() {
 
   renderFilterChips(els.laneFilterChips, LANES, laneFilters);
   renderFilterChips(els.classFilterChips, CLASSES, classFilters);
+
+  els.addEventForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const title = els.newEventTitle.value.trim();
+    const date = els.newEventDate.value;
+    if (!title || !date) return;
+    const time = els.newEventTime.value;
+    const notes = els.newEventNotes.value.trim();
+    addEvent(title, date, time, notes);
+    els.newEventTitle.value = "";
+    els.newEventTime.value = "";
+    els.newEventNotes.value = "";
+  });
+
+  els.prevMonthBtn.addEventListener("click", () => {
+    calendarViewDate = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth() - 1, 1);
+    renderCalendarTab();
+  });
+
+  els.nextMonthBtn.addEventListener("click", () => {
+    calendarViewDate = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth() + 1, 1);
+    renderCalendarTab();
+  });
 }
 
 function renderFilterChips(container, options, activeSet) {
@@ -217,7 +277,9 @@ function switchTab(tab) {
   document.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
   document.getElementById("poolTab").classList.toggle("active", tab === "pool");
   document.getElementById("overviewTab").classList.toggle("active", tab === "overview");
+  document.getElementById("calendarTab").classList.toggle("active", tab === "calendar");
   if (tab === "overview") renderOverviewTab();
+  if (tab === "calendar") renderCalendarTab();
 }
 
 /* ---------- Shared roster (Firestore) ---------- */
@@ -235,6 +297,15 @@ function handlePeopleSnapshot(snapshot) {
   renderPeopleList();
   renderPoolTab();
   renderOverviewTab();
+  renderCalendarTab(); // attendee names/lists depend on the current people list
+}
+
+function handleEventsSnapshot(snapshot) {
+  events = snapshot.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => (a.date + (a.time || "")).localeCompare(b.date + (b.time || "")));
+
+  renderCalendarTab();
 }
 
 /* ---------- Local-only UI persistence ---------- */
@@ -338,6 +409,41 @@ async function savePool(person, nextPool) {
 function updatePoolEntry(person, championId, changes) {
   const nextPool = person.pool.map((p) => (p.championId === championId ? { ...p, ...changes } : p));
   savePool(person, nextPool);
+}
+
+/* ---------- Events ---------- */
+
+async function addEvent(title, date, time, notes) {
+  const id = crypto.randomUUID();
+  selectedCalendarDate = date;
+  try {
+    await setDoc(eventDoc(id), { title, date, time: time || null, notes: notes || null, attendees: [] });
+  } catch (err) {
+    console.error(err);
+    alert("Could not add that event — check your connection and try again.");
+  }
+}
+
+async function deleteEvent(id) {
+  try {
+    await deleteDoc(eventDoc(id));
+  } catch (err) {
+    console.error(err);
+    alert("Could not delete that event — check your connection and try again.");
+  }
+}
+
+async function toggleAttendee(event, personId) {
+  const attendees = event.attendees || [];
+  const nextAttendees = attendees.includes(personId)
+    ? attendees.filter((id) => id !== personId)
+    : [...attendees, personId];
+  try {
+    await updateDoc(eventDoc(event.id), { attendees: nextAttendees });
+  } catch (err) {
+    console.error(err);
+    alert("Could not update attendance — check your connection and try again.");
+  }
 }
 
 /* ---------- Rendering: People list ---------- */
@@ -665,4 +771,173 @@ function renderOverviewTab() {
   });
   table.appendChild(tbody);
   els.coverageTable.appendChild(table);
+}
+
+/* ---------- Rendering: Calendar tab ---------- */
+
+function formatDateKey(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function formatTime(time24) {
+  const [h, m] = time24.split(":").map(Number);
+  const period = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 || 12;
+  return `${h12}:${String(m).padStart(2, "0")} ${period}`;
+}
+
+function renderCalendarTab() {
+  const year = calendarViewDate.getFullYear();
+  const month = calendarViewDate.getMonth();
+  els.calendarMonthLabel.textContent = calendarViewDate.toLocaleDateString(undefined, {
+    month: "long",
+    year: "numeric",
+  });
+
+  const firstOfMonth = new Date(year, month, 1);
+  const startDay = firstOfMonth.getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const eventsByDate = {};
+  events.forEach((ev) => {
+    (eventsByDate[ev.date] ||= []).push(ev);
+  });
+
+  els.calendarGrid.innerHTML = "";
+
+  ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].forEach((d) => {
+    const el = document.createElement("div");
+    el.className = "calendar-weekday";
+    el.textContent = d;
+    els.calendarGrid.appendChild(el);
+  });
+
+  for (let i = 0; i < startDay; i++) {
+    const blank = document.createElement("div");
+    blank.className = "calendar-day empty";
+    els.calendarGrid.appendChild(blank);
+  }
+
+  const todayKey = formatDateKey(new Date());
+
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateKey = formatDateKey(new Date(year, month, day));
+    const cell = document.createElement("div");
+    cell.className = "calendar-day";
+    if (dateKey === todayKey) cell.classList.add("today");
+    if (dateKey === selectedCalendarDate) cell.classList.add("selected");
+
+    const num = document.createElement("span");
+    num.className = "calendar-day-number";
+    num.textContent = day;
+    cell.appendChild(num);
+
+    const dayEvents = eventsByDate[dateKey] || [];
+    dayEvents.slice(0, 3).forEach((ev) => {
+      const chip = document.createElement("span");
+      chip.className = "calendar-event-chip";
+      chip.textContent = ev.title;
+      cell.appendChild(chip);
+    });
+    if (dayEvents.length > 3) {
+      const more = document.createElement("span");
+      more.className = "calendar-event-more";
+      more.textContent = `+${dayEvents.length - 3} more`;
+      cell.appendChild(more);
+    }
+
+    cell.addEventListener("click", () => {
+      selectedCalendarDate = dateKey;
+      els.newEventDate.value = dateKey;
+      renderCalendarTab();
+    });
+
+    els.calendarGrid.appendChild(cell);
+  }
+
+  renderDayDetailPanel();
+}
+
+function renderDayDetailPanel() {
+  if (!selectedCalendarDate) {
+    els.dayDetailPanel.classList.add("hidden");
+    return;
+  }
+  els.dayDetailPanel.classList.remove("hidden");
+
+  const dayEvents = events.filter((ev) => ev.date === selectedCalendarDate);
+  const dateObj = new Date(`${selectedCalendarDate}T00:00:00`);
+  els.dayDetailTitle.textContent = dateObj.toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+
+  els.dayDetailEvents.innerHTML = "";
+
+  if (dayEvents.length === 0) {
+    const p = document.createElement("p");
+    p.className = "empty-state";
+    p.textContent = "No events yet — add one above.";
+    els.dayDetailEvents.appendChild(p);
+    return;
+  }
+
+  [...dayEvents]
+    .sort((a, b) => (a.time || "").localeCompare(b.time || ""))
+    .forEach((ev) => {
+      const card = document.createElement("div");
+      card.className = "event-card";
+
+      const header = document.createElement("div");
+      header.className = "event-card-header";
+      const titleEl = document.createElement("strong");
+      titleEl.textContent = ev.time ? `${formatTime(ev.time)} — ${ev.title}` : ev.title;
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "remove-event";
+      deleteBtn.textContent = "×";
+      deleteBtn.title = "Delete event";
+      deleteBtn.addEventListener("click", () => {
+        if (confirm(`Delete "${ev.title}"?`)) deleteEvent(ev.id);
+      });
+
+      header.append(titleEl, deleteBtn);
+      card.appendChild(header);
+
+      if (ev.notes) {
+        const notesEl = document.createElement("p");
+        notesEl.className = "event-notes";
+        notesEl.textContent = ev.notes;
+        card.appendChild(notesEl);
+      }
+
+      const attendeeWrap = document.createElement("div");
+      attendeeWrap.className = "attendee-list";
+      if (state.people.length === 0) {
+        const p = document.createElement("p");
+        p.className = "no-champs";
+        p.textContent = "Add people first to mark attendance.";
+        attendeeWrap.appendChild(p);
+      } else {
+        state.people.forEach((person) => {
+          const label = document.createElement("label");
+          label.className = "attendee-chip";
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.checked = (ev.attendees || []).includes(person.id);
+          checkbox.addEventListener("change", () => toggleAttendee(ev, person.id));
+          label.append(checkbox, document.createTextNode(person.name));
+          attendeeWrap.appendChild(label);
+        });
+      }
+      card.appendChild(attendeeWrap);
+
+      els.dayDetailEvents.appendChild(card);
+    });
 }

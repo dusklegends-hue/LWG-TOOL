@@ -32,6 +32,7 @@
       <nav class="tabs">
         <button class="tab-btn active" data-tab="pool">Pool</button>
         <button class="tab-btn" data-tab="overview">Overview</button>
+        <button class="tab-btn" data-tab="calendar">Calendar</button>
       </nav>
 
       <div id="poolTab" class="tab-panel active">
@@ -66,6 +67,29 @@
         <h2>Role Coverage</h2>
         <div id="coverageWarnings" class="coverage-warnings"></div>
         <div id="coverageTable" class="coverage-table"></div>
+      </div>
+
+      <div id="calendarTab" class="tab-panel">
+        <form id="addEventForm" class="add-event-form">
+          <input id="newEventTitle" type="text" placeholder="Event title…" autocomplete="off" required />
+          <input id="newEventDate" type="date" required />
+          <input id="newEventTime" type="time" />
+          <input id="newEventNotes" type="text" placeholder="Notes (optional)" autocomplete="off" />
+          <button type="submit">Add Event</button>
+        </form>
+
+        <div class="calendar-header">
+          <button id="prevMonthBtn" type="button" aria-label="Previous month">‹</button>
+          <h2 id="calendarMonthLabel"></h2>
+          <button id="nextMonthBtn" type="button" aria-label="Next month">›</button>
+        </div>
+
+        <div id="calendarGrid" class="calendar-grid"></div>
+
+        <div id="dayDetailPanel" class="day-detail-panel hidden">
+          <h3 id="dayDetailTitle"></h3>
+          <div id="dayDetailEvents"></div>
+        </div>
       </div>
     </section>
   </main>
