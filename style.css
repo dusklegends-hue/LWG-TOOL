@@ -1269,6 +1269,83 @@ h3 {
   text-align: right;
 }
 
+.custom-game-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+
+.custom-game-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
+
+.custom-game-teams {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.custom-game-team {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.custom-game-team-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.custom-game-team-label.win {
+  color: var(--accent);
+}
+
+.custom-game-team-label.loss {
+  color: var(--danger);
+}
+
+.custom-game-participant {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.custom-game-participant img {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.custom-game-participant .participant-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.custom-game-participant .participant-name.matched {
+  color: var(--gold-bright);
+  font-weight: 600;
+}
+
+.custom-game-participant .participant-kda {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+}
+
 /* ---------- Mobile ---------- */
 
 @media (max-width: 768px) {
@@ -1385,6 +1462,10 @@ h3 {
   .stats-summary-card {
     min-width: 0;
     flex: 1 1 45%;
+  }
+
+  .custom-game-teams {
+    grid-template-columns: 1fr;
   }
 
   .comp-role-row {

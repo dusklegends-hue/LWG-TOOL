@@ -23,6 +23,7 @@ const db = getFirestore(firebaseApp);
 const peopleCol = collection(db, "people");
 const eventsCol = collection(db, "events");
 const teamCompsCol = collection(db, "teamComps");
+const customGamesCol = collection(db, "customGames");
 
 function personDoc(id) {
   return doc(peopleCol, id);
@@ -154,6 +155,7 @@ let matchesCache = {}; // personId -> { ranked, live, matches, loadError }
 let matchesLoadingId = null; // person id currently fetching match data, or null
 let statsCache = {}; // personId -> { games, wins, losses, kills, deaths, assists, roles, champions, loadError }
 let statsLoadingId = null; // person id currently fetching stats, or null
+let customGames = []; // populated live from Firestore's "customGames" collection — written by the local logger script
 
 const els = {};
 
@@ -173,6 +175,7 @@ async function init() {
   let peopleSnapshotError = null;
   let eventsSnapshotError = null;
   let teamCompsSnapshotError = null;
+  let customGamesSnapshotError = null;
 
   const championPromise = loadChampionData().catch((err) => {
     championDataError = err;
@@ -220,17 +223,32 @@ async function init() {
     );
   });
 
+  const firstCustomGamesSnapshotPromise = new Promise((resolve) => {
+    onSnapshot(
+      customGamesCol,
+      (snapshot) => {
+        handleCustomGamesSnapshot(snapshot);
+        resolve();
+      },
+      (err) => {
+        customGamesSnapshotError = err;
+        resolve();
+      }
+    );
+  });
+
   await Promise.all([
     championPromise,
     firstPeopleSnapshotPromise,
     firstEventsSnapshotPromise,
     firstTeamCompsSnapshotPromise,
+    firstCustomGamesSnapshotPromise,
   ]);
 
-  if (championDataError || peopleSnapshotError || eventsSnapshotError || teamCompsSnapshotError) {
+  if (championDataError || peopleSnapshotError || eventsSnapshotError || teamCompsSnapshotError || customGamesSnapshotError) {
     document.getElementById("loadingScreen").innerHTML =
       `<p style="color:#e05252">${championDataError ? "Failed to load champion data." : "Failed to connect to the shared roster."} Check your internet connection and reload.</p>`;
-    console.error(championDataError || peopleSnapshotError || eventsSnapshotError || teamCompsSnapshotError);
+    console.error(championDataError || peopleSnapshotError || eventsSnapshotError || teamCompsSnapshotError || customGamesSnapshotError);
     return;
   }
 
@@ -243,6 +261,7 @@ async function init() {
   renderCompsTab();
   renderMatchesTab();
   renderStatsTab();
+  renderCustomsTab();
 
   document.getElementById("loadingScreen").classList.add("hidden");
   els.app.classList.remove("hidden");
@@ -304,6 +323,7 @@ function cacheEls() {
   els.statsSummarySection = document.getElementById("statsSummarySection");
   els.statsRolesSection = document.getElementById("statsRolesSection");
   els.statsChampionsSection = document.getElementById("statsChampionsSection");
+  els.customGamesList = document.getElementById("customGamesList");
 }
 
 function bindStaticEvents() {
@@ -407,11 +427,13 @@ function switchTab(tab) {
   document.getElementById("compsTab").classList.toggle("active", tab === "comps");
   document.getElementById("matchesTab").classList.toggle("active", tab === "matches");
   document.getElementById("statsTab").classList.toggle("active", tab === "stats");
+  document.getElementById("customsTab").classList.toggle("active", tab === "customs");
   if (tab === "overview") renderOverviewTab();
   if (tab === "calendar") renderCalendarTab();
   if (tab === "comps") renderCompsTab();
   if (tab === "matches") renderMatchesTab();
   if (tab === "stats") renderStatsTab();
+  if (tab === "customs") renderCustomsTab();
 }
 
 /* ---------- Shared roster (Firestore) ---------- */
@@ -448,6 +470,18 @@ function handleTeamCompsSnapshot(snapshot) {
     .sort((a, b) => a.name.localeCompare(b.name));
 
   renderCompsTab();
+}
+
+function handleCustomGamesSnapshot(snapshot) {
+  customGames = snapshot.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => {
+      const aTime = a.capturedAt?.seconds ?? 0;
+      const bTime = b.capturedAt?.seconds ?? 0;
+      return bTime - aTime;
+    });
+
+  renderCustomsTab();
 }
 
 /* ---------- Local-only UI persistence ---------- */
@@ -1998,4 +2032,77 @@ function renderStatsChampions(cached) {
     });
 
   els.statsChampionsSection.appendChild(list);
+}
+
+/* ---------- Custom games (logged by the local companion script) ---------- */
+
+function renderCustomsTab() {
+  els.customGamesList.innerHTML = "";
+  if (customGames.length === 0) {
+    els.customGamesList.innerHTML = `<p class="empty-state">No custom games logged yet.</p>`;
+    return;
+  }
+  customGames.forEach((game) => {
+    els.customGamesList.appendChild(buildCustomGameCard(game));
+  });
+}
+
+function buildCustomGameCard(game) {
+  const card = document.createElement("div");
+  card.className = "custom-game-card";
+
+  const header = document.createElement("div");
+  header.className = "custom-game-header";
+  const dateStr = game.capturedAt?.toDate
+    ? game.capturedAt.toDate().toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
+    : "";
+  const durationStr = game.gameDurationSeconds ? formatDuration(game.gameDurationSeconds) : "";
+  header.textContent = [dateStr, durationStr].filter(Boolean).join(" · ");
+  card.appendChild(header);
+
+  const participants = game.participants || [];
+  const blueSide = participants.filter((p) => p.teamId === 100);
+  const redSide = participants.filter((p) => p.teamId === 200);
+
+  const teamsWrap = document.createElement("div");
+  teamsWrap.className = "custom-game-teams";
+  teamsWrap.append(buildCustomGameTeam("Blue Side", blueSide), buildCustomGameTeam("Red Side", redSide));
+  card.appendChild(teamsWrap);
+
+  return card;
+}
+
+function buildCustomGameTeam(label, participants) {
+  const wrap = document.createElement("div");
+  wrap.className = "custom-game-team";
+
+  const won = participants.length > 0 && participants[0].win;
+  const labelEl = document.createElement("div");
+  labelEl.className = "custom-game-team-label" + (participants.length ? (won ? " win" : " loss") : "");
+  labelEl.textContent = participants.length ? `${label} — ${won ? "Victory" : "Defeat"}` : label;
+  wrap.appendChild(labelEl);
+
+  participants.forEach((p) => {
+    const row = document.createElement("div");
+    row.className = "custom-game-participant";
+
+    const champ = findChampionByKey(p.championId);
+    const img = document.createElement("img");
+    img.src = champ ? champ.image : "";
+    img.alt = champ ? champ.name : String(p.championId);
+
+    const name = document.createElement("div");
+    name.className = "participant-name" + (p.matchedPersonName ? " matched" : "");
+    name.textContent = p.matchedPersonName || p.summonerName || "Unknown";
+    name.title = p.summonerName || "";
+
+    const kda = document.createElement("div");
+    kda.className = "participant-kda";
+    kda.textContent = `${p.kills}/${p.deaths}/${p.assists}`;
+
+    row.append(img, name, kda);
+    wrap.appendChild(row);
+  });
+
+  return wrap;
 }

@@ -39,6 +39,7 @@
         <button class="tab-btn" data-tab="comps">Comps</button>
         <button class="tab-btn" data-tab="matches">Matches</button>
         <button class="tab-btn" data-tab="stats">Stats</button>
+        <button class="tab-btn" data-tab="customs">Customs</button>
       </nav>
 
       <div id="poolTab" class="tab-panel active">
@@ -145,6 +146,14 @@
           <div id="statsRolesSection" class="matches-section"></div>
           <div id="statsChampionsSection" class="matches-section"></div>
         </div>
+      </div>
+
+      <div id="customsTab" class="tab-panel">
+        <p class="matches-status">
+          Run <code>custom-game-logger.ps1</code> (in the project repo) while playing a custom game and it'll show up
+          here automatically — only one person in the lobby needs to run it.
+        </p>
+        <div id="customGamesList" class="comps-list"></div>
       </div>
     </section>
   </main>
