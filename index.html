@@ -38,6 +38,7 @@
         <button class="tab-btn" data-tab="calendar">Calendar</button>
         <button class="tab-btn" data-tab="comps">Comps</button>
         <button class="tab-btn" data-tab="matches">Matches</button>
+        <button class="tab-btn" data-tab="stats">Stats</button>
       </nav>
 
       <div id="poolTab" class="tab-panel active">
@@ -124,6 +125,25 @@
           <div id="rankedSection" class="matches-section"></div>
           <div id="liveSection" class="matches-section"></div>
           <div id="historySection" class="matches-section"></div>
+        </div>
+      </div>
+
+      <div id="statsTab" class="tab-panel">
+        <div id="noPersonSelectedStats" class="empty-state">
+          <p>Select or add a player to view their statistics.</p>
+        </div>
+
+        <div id="statsContent" class="matches-content hidden">
+          <div class="person-pool-header">
+            <h2 id="statsPersonName"></h2>
+          </div>
+
+          <button id="refreshStatsBtn" type="button" class="load-matches-btn">Refresh Stats</button>
+          <div id="statsStatus" class="matches-status"></div>
+
+          <div id="statsSummarySection" class="matches-section"></div>
+          <div id="statsRolesSection" class="matches-section"></div>
+          <div id="statsChampionsSection" class="matches-section"></div>
         </div>
       </div>
     </section>

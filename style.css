@@ -1150,6 +1150,125 @@ h3 {
   margin-top: 2px;
 }
 
+.stats-summary-cards {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.stats-summary-card {
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 18px;
+  min-width: 140px;
+}
+
+.stats-summary-card .stat-label {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stats-summary-card .stat-value {
+  color: var(--gold-bright);
+  font-weight: 700;
+  font-size: 1.3rem;
+  margin: 4px 0 2px;
+}
+
+.stats-summary-card .stat-subvalue {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+.stats-summary-card .stat-value.win-rate-good {
+  color: var(--accent);
+}
+
+.stats-summary-card .stat-value.win-rate-bad {
+  color: var(--danger);
+}
+
+.role-breakdown {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.role-pill {
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 6px 14px;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.role-pill strong {
+  color: var(--gold-bright);
+}
+
+.champ-stat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.champ-stat-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 14px;
+}
+
+.champ-stat-row img {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.champ-stat-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--gold-bright);
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+
+.champ-stat-games {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  min-width: 70px;
+}
+
+.champ-stat-winrate {
+  min-width: 60px;
+  font-weight: 700;
+  font-size: 0.85rem;
+  text-align: right;
+}
+
+.champ-stat-winrate.good {
+  color: var(--accent);
+}
+
+.champ-stat-winrate.bad {
+  color: var(--danger);
+}
+
+.champ-stat-kda {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  min-width: 90px;
+  text-align: right;
+}
+
 /* ---------- Mobile ---------- */
 
 @media (max-width: 768px) {
@@ -1257,6 +1376,15 @@ h3 {
 
   .match-card {
     flex-wrap: wrap;
+  }
+
+  .champ-stat-row {
+    flex-wrap: wrap;
+  }
+
+  .stats-summary-card {
+    min-width: 0;
+    flex: 1 1 45%;
   }
 
   .comp-role-row {

@@ -42,6 +42,15 @@ const TIERS = ["S", "A", "B", "C"];
 const UI_STORAGE_KEY = "championPoolManager.ui.v1";
 const DDRAGON_BASE = "https://ddragon.leagueoflegends.com";
 const RIOT_PROXY_BASE = "https://lwg-riot-proxy.dusklegends-lwg.workers.dev";
+const STATS_MATCH_COUNT = 20;
+const ROLE_DISPLAY_NAMES = {
+  TOP: "Top",
+  JUNGLE: "Jungle",
+  MIDDLE: "Mid",
+  BOTTOM: "ADC",
+  UTILITY: "Support",
+  OTHER: "Other/ARAM",
+};
 const QUEUE_NAMES = {
   400: "Normal Draft",
   420: "Ranked Solo",
@@ -143,6 +152,8 @@ let riotIdEditingId = null; // person id whose Riot ID is mid-edit, or null
 let riotIdDraftValue = ""; // in-progress (unsaved) text for that edit
 let matchesCache = {}; // personId -> { ranked, live, matches, loadError }
 let matchesLoadingId = null; // person id currently fetching match data, or null
+let statsCache = {}; // personId -> { games, wins, losses, kills, deaths, assists, roles, champions, loadError }
+let statsLoadingId = null; // person id currently fetching stats, or null
 
 const els = {};
 
@@ -231,6 +242,7 @@ async function init() {
   renderCalendarTab();
   renderCompsTab();
   renderMatchesTab();
+  renderStatsTab();
 
   document.getElementById("loadingScreen").classList.add("hidden");
   els.app.classList.remove("hidden");
@@ -284,6 +296,14 @@ function cacheEls() {
   els.rankedSection = document.getElementById("rankedSection");
   els.liveSection = document.getElementById("liveSection");
   els.historySection = document.getElementById("historySection");
+  els.noPersonSelectedStats = document.getElementById("noPersonSelectedStats");
+  els.statsContent = document.getElementById("statsContent");
+  els.statsPersonName = document.getElementById("statsPersonName");
+  els.refreshStatsBtn = document.getElementById("refreshStatsBtn");
+  els.statsStatus = document.getElementById("statsStatus");
+  els.statsSummarySection = document.getElementById("statsSummarySection");
+  els.statsRolesSection = document.getElementById("statsRolesSection");
+  els.statsChampionsSection = document.getElementById("statsChampionsSection");
 }
 
 function bindStaticEvents() {
@@ -355,6 +375,11 @@ function bindStaticEvents() {
     const person = getSelectedPerson();
     if (person) loadMatchData(person);
   });
+
+  els.refreshStatsBtn.addEventListener("click", () => {
+    const person = getSelectedPerson();
+    if (person) loadStatsData(person);
+  });
 }
 
 function renderFilterChips(container, options, activeSet) {
@@ -381,10 +406,12 @@ function switchTab(tab) {
   document.getElementById("calendarTab").classList.toggle("active", tab === "calendar");
   document.getElementById("compsTab").classList.toggle("active", tab === "comps");
   document.getElementById("matchesTab").classList.toggle("active", tab === "matches");
+  document.getElementById("statsTab").classList.toggle("active", tab === "stats");
   if (tab === "overview") renderOverviewTab();
   if (tab === "calendar") renderCalendarTab();
   if (tab === "comps") renderCompsTab();
   if (tab === "matches") renderMatchesTab();
+  if (tab === "stats") renderStatsTab();
 }
 
 /* ---------- Shared roster (Firestore) ---------- */
@@ -404,6 +431,7 @@ function handlePeopleSnapshot(snapshot) {
   renderOverviewTab();
   renderCalendarTab(); // attendee names/lists depend on the current people list
   renderMatchesTab();
+  renderStatsTab();
 }
 
 function handleEventsSnapshot(snapshot) {
@@ -811,7 +839,9 @@ function renderRiotIdBox(person) {
         await updateDoc(personDoc(person.id), { riotId: newRiotId, puuid: changed ? null : person.puuid });
         if (changed) {
           delete matchesCache[person.id];
+          delete statsCache[person.id];
           renderMatchesTab();
+          renderStatsTab();
         }
       } catch (err) {
         console.error(err);
@@ -1726,4 +1756,246 @@ function renderHistorySection(cached) {
     card.append(img, infoWrap, resultWrap);
     els.historySection.appendChild(card);
   });
+}
+
+/* ---------- Stats (aggregated from Riot match history) ---------- */
+
+async function loadStatsData(person) {
+  if (!person.riotId) return;
+
+  statsLoadingId = person.id;
+  renderStatsTab();
+
+  try {
+    let puuid = person.puuid || null;
+
+    if (!puuid) {
+      const [gameName, tagLine] = splitRiotId(person.riotId);
+      if (!gameName || !tagLine) throw new Error("Riot ID should look like Name#Tag");
+
+      const accountRes = await fetch(
+        `${RIOT_PROXY_BASE}/account?gameName=${encodeURIComponent(gameName)}&tagLine=${encodeURIComponent(tagLine)}`
+      );
+      const accountData = await accountRes.json();
+      if (!accountRes.ok) throw new Error(riotErrorMessage(accountData, "Could not find that Riot ID"));
+      puuid = accountData.puuid;
+      await updateDoc(personDoc(person.id), { puuid });
+    }
+
+    const matchIdsRes = await fetch(`${RIOT_PROXY_BASE}/matches?puuid=${puuid}&count=${STATS_MATCH_COUNT}`);
+    const matchIds = await matchIdsRes.json();
+    if (!matchIdsRes.ok) throw new Error(riotErrorMessage(matchIds, "Could not load match history"));
+
+    const matches = await Promise.all(
+      (Array.isArray(matchIds) ? matchIds : []).map((id) => fetch(`${RIOT_PROXY_BASE}/match/${id}`).then((r) => r.json()))
+    );
+
+    statsCache[person.id] = aggregateStats(matches, puuid);
+  } catch (err) {
+    console.error(err);
+    statsCache[person.id] = { loadError: err.message || "Something went wrong loading stats." };
+  } finally {
+    statsLoadingId = null;
+    renderStatsTab();
+  }
+}
+
+function aggregateStats(matches, puuid) {
+  let games = 0;
+  let wins = 0;
+  let losses = 0;
+  let kills = 0;
+  let deaths = 0;
+  let assists = 0;
+  const roles = {};
+  const champions = {};
+
+  matches.forEach((match) => {
+    if (!match || !match.info) return;
+    const me = match.info.participants.find((p) => p.puuid === puuid);
+    if (!me) return;
+
+    games++;
+    if (me.win) wins++;
+    else losses++;
+    kills += me.kills;
+    deaths += me.deaths;
+    assists += me.assists;
+
+    const role = me.teamPosition || "OTHER";
+    roles[role] = (roles[role] || 0) + 1;
+
+    const champKey = me.championName;
+    if (!champions[champKey]) champions[champKey] = { games: 0, wins: 0, kills: 0, deaths: 0, assists: 0 };
+    champions[champKey].games++;
+    if (me.win) champions[champKey].wins++;
+    champions[champKey].kills += me.kills;
+    champions[champKey].deaths += me.deaths;
+    champions[champKey].assists += me.assists;
+  });
+
+  return { games, wins, losses, kills, deaths, assists, roles, champions };
+}
+
+function renderStatsTab() {
+  const person = getSelectedPerson();
+  if (!person) {
+    els.noPersonSelectedStats.classList.remove("hidden");
+    els.statsContent.classList.add("hidden");
+    return;
+  }
+  els.noPersonSelectedStats.classList.add("hidden");
+  els.statsContent.classList.remove("hidden");
+  els.statsPersonName.textContent = person.name;
+
+  const isLoading = statsLoadingId === person.id;
+  els.refreshStatsBtn.disabled = isLoading || !person.riotId;
+  els.refreshStatsBtn.textContent = isLoading ? "Loading…" : "Refresh Stats";
+
+  const cached = statsCache[person.id];
+
+  els.statsStatus.classList.remove("error");
+  if (!person.riotId) {
+    els.statsStatus.textContent = "Add a Riot ID on the Matches tab to pull stats.";
+  } else if (isLoading) {
+    els.statsStatus.textContent = `Analyzing last ${STATS_MATCH_COUNT} matches…`;
+  } else if (cached && cached.loadError) {
+    els.statsStatus.textContent = cached.loadError;
+    els.statsStatus.classList.add("error");
+  } else {
+    els.statsStatus.textContent = "";
+  }
+
+  renderStatsSummary(cached);
+  renderStatsRoles(cached);
+  renderStatsChampions(cached);
+}
+
+function buildStatCard(label, value, sub, valueClass) {
+  const card = document.createElement("div");
+  card.className = "stats-summary-card";
+
+  const labelEl = document.createElement("div");
+  labelEl.className = "stat-label";
+  labelEl.textContent = label;
+
+  const valueEl = document.createElement("div");
+  valueEl.className = "stat-value" + (valueClass ? ` ${valueClass}` : "");
+  valueEl.textContent = value;
+
+  const subEl = document.createElement("div");
+  subEl.className = "stat-subvalue";
+  subEl.textContent = sub;
+
+  card.append(labelEl, valueEl, subEl);
+  return card;
+}
+
+function renderStatsSummary(cached) {
+  els.statsSummarySection.innerHTML = "";
+  if (!cached || cached.loadError) return;
+  if (cached.games === 0) {
+    els.statsSummarySection.innerHTML = `<p class="empty-state">No matches found to analyze.</p>`;
+    return;
+  }
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Summary";
+  els.statsSummarySection.appendChild(heading);
+
+  const wrap = document.createElement("div");
+  wrap.className = "stats-summary-cards";
+
+  const winRate = Math.round((cached.wins / cached.games) * 100);
+  const recordCard = buildStatCard(
+    "Record",
+    `${cached.wins}W ${cached.losses}L`,
+    `${winRate}% win rate`,
+    winRate >= 50 ? "win-rate-good" : "win-rate-bad"
+  );
+
+  const avgK = (cached.kills / cached.games).toFixed(1);
+  const avgD = (cached.deaths / cached.games).toFixed(1);
+  const avgA = (cached.assists / cached.games).toFixed(1);
+  const kda = cached.deaths > 0 ? ((cached.kills + cached.assists) / cached.deaths).toFixed(2) : "Perfect";
+  const kdaCard = buildStatCard("Avg KDA", `${avgK} / ${avgD} / ${avgA}`, `${kda} KDA ratio`);
+
+  const gamesCard = buildStatCard("Games Analyzed", String(cached.games), "most recent matches");
+
+  wrap.append(recordCard, kdaCard, gamesCard);
+  els.statsSummarySection.appendChild(wrap);
+}
+
+function renderStatsRoles(cached) {
+  els.statsRolesSection.innerHTML = "";
+  if (!cached || cached.loadError || !cached.games) return;
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Roles Played";
+  els.statsRolesSection.appendChild(heading);
+
+  const wrap = document.createElement("div");
+  wrap.className = "role-breakdown";
+
+  Object.entries(cached.roles)
+    .sort((a, b) => b[1] - a[1])
+    .forEach(([role, count]) => {
+      const pill = document.createElement("span");
+      pill.className = "role-pill";
+      const strong = document.createElement("strong");
+      strong.textContent = String(count);
+      pill.append(strong, document.createTextNode(" " + (ROLE_DISPLAY_NAMES[role] || role)));
+      wrap.appendChild(pill);
+    });
+
+  els.statsRolesSection.appendChild(wrap);
+}
+
+function renderStatsChampions(cached) {
+  els.statsChampionsSection.innerHTML = "";
+  if (!cached || cached.loadError || !cached.games) return;
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Champion Breakdown";
+  els.statsChampionsSection.appendChild(heading);
+
+  const list = document.createElement("div");
+  list.className = "champ-stat-list";
+
+  Object.entries(cached.champions)
+    .sort((a, b) => b[1].games - a[1].games)
+    .forEach(([championName, stat]) => {
+      const row = document.createElement("div");
+      row.className = "champ-stat-row";
+
+      const champ = findChampionByName(championName);
+      const img = document.createElement("img");
+      img.src = champ ? champ.image : "";
+      img.alt = championName;
+
+      const name = document.createElement("div");
+      name.className = "champ-stat-name";
+      name.textContent = champ ? champ.name : championName;
+
+      const gamesEl = document.createElement("div");
+      gamesEl.className = "champ-stat-games";
+      gamesEl.textContent = `${stat.games} game${stat.games === 1 ? "" : "s"}`;
+
+      const winRate = Math.round((stat.wins / stat.games) * 100);
+      const winRateEl = document.createElement("div");
+      winRateEl.className = "champ-stat-winrate " + (winRate >= 50 ? "good" : "bad");
+      winRateEl.textContent = `${winRate}%`;
+
+      const avgK = (stat.kills / stat.games).toFixed(1);
+      const avgD = (stat.deaths / stat.games).toFixed(1);
+      const avgA = (stat.assists / stat.games).toFixed(1);
+      const kdaEl = document.createElement("div");
+      kdaEl.className = "champ-stat-kda";
+      kdaEl.textContent = `${avgK}/${avgD}/${avgA}`;
+
+      row.append(img, name, gamesEl, winRateEl, kdaEl);
+      list.appendChild(row);
+    });
+
+  els.statsChampionsSection.appendChild(list);
 }
