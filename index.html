@@ -33,6 +33,7 @@
         <button class="tab-btn active" data-tab="pool">Pool</button>
         <button class="tab-btn" data-tab="overview">Overview</button>
         <button class="tab-btn" data-tab="calendar">Calendar</button>
+        <button class="tab-btn" data-tab="comps">Comps</button>
       </nav>
 
       <div id="poolTab" class="tab-panel active">
@@ -91,6 +92,15 @@
           <h3 id="dayDetailTitle"></h3>
           <div id="dayDetailEvents"></div>
         </div>
+      </div>
+
+      <div id="compsTab" class="tab-panel">
+        <form id="addCompForm" class="add-comp-form">
+          <input id="newCompName" type="text" placeholder="Team comp name…" autocomplete="off" required />
+          <button type="submit">Add Comp</button>
+        </form>
+
+        <div id="compsList" class="comps-list"></div>
       </div>
     </section>
   </main>

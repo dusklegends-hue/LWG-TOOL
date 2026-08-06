@@ -800,3 +800,162 @@ h3 {
 .attendee-chip input {
   accent-color: var(--accent);
 }
+
+.add-comp-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  max-width: 480px;
+}
+
+.add-comp-form input {
+  flex: 1;
+}
+
+.add-comp-form button {
+  background: var(--gold);
+  color: var(--bg);
+  border-color: var(--gold);
+  font-weight: 600;
+}
+
+.add-comp-form button:hover {
+  background: var(--gold-bright);
+}
+
+.comps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.comp-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+
+.comp-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.comp-card-header h3 {
+  color: var(--gold-bright);
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.remove-comp {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 1.2rem;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.remove-comp:hover {
+  color: var(--danger);
+  border: none;
+}
+
+.comp-role-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.comp-role-label-wrap {
+  min-width: 70px;
+  padding-top: 6px;
+}
+
+.comp-role-label {
+  font-size: 0.75rem;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.comp-role-champs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+  align-items: center;
+}
+
+.comp-champ-chip {
+  position: relative;
+  width: 44px;
+  height: 44px;
+}
+
+.comp-champ-chip img {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  display: block;
+}
+
+.remove-comp-champ {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  background: rgba(0,0,0,0.7);
+  color: var(--danger);
+  border: none;
+  border-radius: 50%;
+  width: 16px;
+  height: 16px;
+  font-size: 0.65rem;
+  line-height: 1;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.add-comp-champ-btn {
+  background: none;
+  border: 1px dashed var(--border);
+  color: var(--text-dim);
+  border-radius: var(--radius);
+  padding: 4px 12px;
+  font-size: 0.78rem;
+  align-self: center;
+}
+
+.add-comp-champ-btn:hover {
+  border-color: var(--gold);
+  color: var(--gold-bright);
+}
+
+.comp-champ-picker {
+  width: 100%;
+  margin-top: 10px;
+  padding: 12px;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.comp-champ-picker input[type="text"] {
+  width: 100%;
+  max-width: 320px;
+  margin-bottom: 10px;
+}
+
+.comp-picker-grid {
+  max-height: 340px;
+  overflow-y: auto;
+}

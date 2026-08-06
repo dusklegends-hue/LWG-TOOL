@@ -22,6 +22,7 @@ const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 const peopleCol = collection(db, "people");
 const eventsCol = collection(db, "events");
+const teamCompsCol = collection(db, "teamComps");
 
 function personDoc(id) {
   return doc(peopleCol, id);
@@ -31,7 +32,12 @@ function eventDoc(id) {
   return doc(eventsCol, id);
 }
 
+function teamCompDoc(id) {
+  return doc(teamCompsCol, id);
+}
+
 const ROLES = ["Top", "Jungle", "Mid", "ADC", "Support", "Fill"];
+const COMP_ROLES = ["Top", "Jungle", "Mid", "ADC", "Support"];
 const TIERS = ["S", "A", "B", "C"];
 const UI_STORAGE_KEY = "championPoolManager.ui.v1";
 const DDRAGON_BASE = "https://ddragon.leagueoflegends.com";
@@ -114,6 +120,10 @@ let selectedCalendarDate = null; // local-only, "YYYY-MM-DD" of the day expanded
 let editingEventId = null; // event id whose fields are mid-edit, or null
 let eventDraft = null; // { title, date, time, timezone, notes } — in-progress (unsaved) values while editing
 
+let teamComps = []; // populated live from Firestore's "teamComps" collection — shared across everyone
+let activeCompPickerKey = null; // "{compId}:{role}" of the champion picker currently expanded, or null
+let compPickerSearch = ""; // search text for the currently expanded picker
+
 const els = {};
 
 if (firebaseConfig.apiKey === "REPLACE_ME") {
@@ -131,6 +141,7 @@ async function init() {
   let championDataError = null;
   let peopleSnapshotError = null;
   let eventsSnapshotError = null;
+  let teamCompsSnapshotError = null;
 
   const championPromise = loadChampionData().catch((err) => {
     championDataError = err;
@@ -164,21 +175,41 @@ async function init() {
     );
   });
 
-  await Promise.all([championPromise, firstPeopleSnapshotPromise, firstEventsSnapshotPromise]);
+  const firstTeamCompsSnapshotPromise = new Promise((resolve) => {
+    onSnapshot(
+      teamCompsCol,
+      (snapshot) => {
+        handleTeamCompsSnapshot(snapshot);
+        resolve();
+      },
+      (err) => {
+        teamCompsSnapshotError = err;
+        resolve();
+      }
+    );
+  });
 
-  if (championDataError || peopleSnapshotError || eventsSnapshotError) {
+  await Promise.all([
+    championPromise,
+    firstPeopleSnapshotPromise,
+    firstEventsSnapshotPromise,
+    firstTeamCompsSnapshotPromise,
+  ]);
+
+  if (championDataError || peopleSnapshotError || eventsSnapshotError || teamCompsSnapshotError) {
     document.getElementById("loadingScreen").innerHTML =
       `<p style="color:#e05252">${championDataError ? "Failed to load champion data." : "Failed to connect to the shared roster."} Check your internet connection and reload.</p>`;
-    console.error(championDataError || peopleSnapshotError || eventsSnapshotError);
+    console.error(championDataError || peopleSnapshotError || eventsSnapshotError || teamCompsSnapshotError);
     return;
   }
 
-  // Re-render now that champion data, the roster, and events are all guaranteed loaded,
+  // Re-render now that champion data and every shared collection are guaranteed loaded,
   // in case a snapshot arrived before champion data finished fetching.
   renderPeopleList();
   renderPoolTab();
   renderOverviewTab();
   renderCalendarTab();
+  renderCompsTab();
 
   document.getElementById("loadingScreen").classList.add("hidden");
   els.app.classList.remove("hidden");
@@ -216,6 +247,9 @@ function cacheEls() {
   els.dayDetailPanel = document.getElementById("dayDetailPanel");
   els.dayDetailTitle = document.getElementById("dayDetailTitle");
   els.dayDetailEvents = document.getElementById("dayDetailEvents");
+  els.addCompForm = document.getElementById("addCompForm");
+  els.newCompName = document.getElementById("newCompName");
+  els.compsList = document.getElementById("compsList");
 }
 
 function bindStaticEvents() {
@@ -269,6 +303,14 @@ function bindStaticEvents() {
     calendarViewDate = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth() + 1, 1);
     renderCalendarTab();
   });
+
+  els.addCompForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const name = els.newCompName.value.trim();
+    if (!name) return;
+    addTeamComp(name);
+    els.newCompName.value = "";
+  });
 }
 
 function renderFilterChips(container, options, activeSet) {
@@ -293,8 +335,10 @@ function switchTab(tab) {
   document.getElementById("poolTab").classList.toggle("active", tab === "pool");
   document.getElementById("overviewTab").classList.toggle("active", tab === "overview");
   document.getElementById("calendarTab").classList.toggle("active", tab === "calendar");
+  document.getElementById("compsTab").classList.toggle("active", tab === "comps");
   if (tab === "overview") renderOverviewTab();
   if (tab === "calendar") renderCalendarTab();
+  if (tab === "comps") renderCompsTab();
 }
 
 /* ---------- Shared roster (Firestore) ---------- */
@@ -321,6 +365,14 @@ function handleEventsSnapshot(snapshot) {
     .sort((a, b) => (a.date + (a.time || "")).localeCompare(b.date + (b.time || "")));
 
   renderCalendarTab();
+}
+
+function handleTeamCompsSnapshot(snapshot) {
+  teamComps = snapshot.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  renderCompsTab();
 }
 
 /* ---------- Local-only UI persistence ---------- */
@@ -474,6 +526,43 @@ async function toggleAttendee(event, personId) {
   } catch (err) {
     console.error(err);
     alert("Could not update attendance — check your connection and try again.");
+  }
+}
+
+/* ---------- Team comps ---------- */
+
+async function addTeamComp(name) {
+  const id = crypto.randomUUID();
+  try {
+    await setDoc(teamCompDoc(id), {
+      name,
+      roles: { Top: [], Jungle: [], Mid: [], ADC: [], Support: [] },
+    });
+  } catch (err) {
+    console.error(err);
+    alert("Could not add that team comp — check your connection and try again.");
+  }
+}
+
+async function deleteTeamComp(id) {
+  try {
+    await deleteDoc(teamCompDoc(id));
+  } catch (err) {
+    console.error(err);
+    alert("Could not delete that team comp — check your connection and try again.");
+  }
+}
+
+async function toggleCompChampion(comp, role, championId) {
+  const current = comp.roles?.[role] || [];
+  const next = current.includes(championId)
+    ? current.filter((id) => id !== championId)
+    : [...current, championId];
+  try {
+    await updateDoc(teamCompDoc(comp.id), { [`roles.${role}`]: next });
+  } catch (err) {
+    console.error(err);
+    alert("Could not update that team comp — check your connection and try again.");
   }
 }
 
@@ -1090,4 +1179,145 @@ function buildEventEditForm(ev) {
   form.append(titleInput, dateInput, timeInput, tzSelect, notesInput, actions);
   card.appendChild(form);
   return card;
+}
+
+/* ---------- Rendering: Comps tab ---------- */
+
+function renderCompsTab() {
+  els.compsList.innerHTML = "";
+
+  if (teamComps.length === 0) {
+    els.compsList.innerHTML = `<p class="empty-state">No team comps yet — add one above.</p>`;
+    return;
+  }
+
+  teamComps.forEach((comp) => {
+    els.compsList.appendChild(buildCompCard(comp));
+  });
+}
+
+function buildCompCard(comp) {
+  const card = document.createElement("div");
+  card.className = "comp-card";
+
+  const header = document.createElement("div");
+  header.className = "comp-card-header";
+
+  const title = document.createElement("h3");
+  title.textContent = comp.name;
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "remove-comp";
+  deleteBtn.textContent = "×";
+  deleteBtn.title = `Delete ${comp.name}`;
+  deleteBtn.addEventListener("click", () => {
+    if (confirm(`Delete team comp "${comp.name}"?`)) deleteTeamComp(comp.id);
+  });
+
+  header.append(title, deleteBtn);
+  card.appendChild(header);
+
+  COMP_ROLES.forEach((role) => {
+    card.appendChild(buildCompRoleRow(comp, role));
+  });
+
+  return card;
+}
+
+function buildCompRoleRow(comp, role) {
+  const row = document.createElement("div");
+  row.className = "comp-role-row";
+
+  const labelWrap = document.createElement("div");
+  labelWrap.className = "comp-role-label-wrap";
+  const label = document.createElement("span");
+  label.className = "comp-role-label";
+  label.textContent = role;
+  labelWrap.appendChild(label);
+
+  const champsWrap = document.createElement("div");
+  champsWrap.className = "comp-role-champs";
+
+  const championIds = comp.roles?.[role] || [];
+  championIds.forEach((champId) => {
+    const champ = championsById[champId];
+    if (!champ) return;
+
+    const chip = document.createElement("div");
+    chip.className = "comp-champ-chip";
+
+    const img = document.createElement("img");
+    img.src = champ.image;
+    img.alt = champ.name;
+    img.title = champ.name;
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "remove-comp-champ";
+    removeBtn.textContent = "×";
+    removeBtn.title = `Remove ${champ.name}`;
+    removeBtn.addEventListener("click", () => toggleCompChampion(comp, role, champId));
+
+    chip.append(img, removeBtn);
+    champsWrap.appendChild(chip);
+  });
+
+  const pickerKey = `${comp.id}:${role}`;
+  const isPickerOpen = activeCompPickerKey === pickerKey;
+
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "add-comp-champ-btn";
+  addBtn.textContent = isPickerOpen ? "close" : "+ add";
+  addBtn.addEventListener("click", () => {
+    activeCompPickerKey = isPickerOpen ? null : pickerKey;
+    compPickerSearch = "";
+    renderCompsTab();
+  });
+
+  row.append(labelWrap, champsWrap, addBtn);
+
+  if (isPickerOpen) {
+    row.appendChild(buildCompChampionPicker(comp, role));
+  }
+
+  return row;
+}
+
+function buildCompChampionPicker(comp, role) {
+  const wrap = document.createElement("div");
+  wrap.className = "comp-champ-picker";
+
+  const search = document.createElement("input");
+  search.type = "text";
+  search.placeholder = "Search champions…";
+  search.autocomplete = "off";
+  search.value = compPickerSearch;
+
+  const grid = document.createElement("div");
+  grid.className = "champion-grid comp-picker-grid";
+
+  function renderGrid() {
+    const selectedIds = new Set(comp.roles?.[role] || []);
+    const query = compPickerSearch.trim().toLowerCase();
+    grid.innerHTML = "";
+    championList
+      .filter((c) => c.name.toLowerCase().includes(query))
+      .forEach((champ) => {
+        const node = buildChampIcon(champ);
+        if (selectedIds.has(champ.id)) node.classList.add("in-pool");
+        node.addEventListener("click", () => toggleCompChampion(comp, role, champ.id));
+        grid.appendChild(node);
+      });
+  }
+
+  search.addEventListener("input", () => {
+    compPickerSearch = search.value;
+    renderGrid();
+  });
+
+  renderGrid();
+  wrap.append(search, grid);
+  return wrap;
 }
