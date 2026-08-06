@@ -31,6 +31,60 @@ const TIERS = ["S", "A", "B", "C"];
 const UI_STORAGE_KEY = "championPoolManager.ui.v1";
 const DDRAGON_BASE = "https://ddragon.leagueoflegends.com";
 
+// Lanes a champion is commonly played in — Data Dragon has no such field, so this is
+// hand-curated and can lag behind brand-new champion releases until updated.
+const LANES = ["Top", "Jungle", "Mid", "ADC", "Support"];
+const COMMON_ROLES = {
+  Aatrox: ["Top"], Ahri: ["Mid"], Akali: ["Mid", "Top"], Akshan: ["Mid", "Top"],
+  Alistar: ["Support"], Ambessa: ["Top", "Mid"], Amumu: ["Jungle"], Anivia: ["Mid"],
+  Annie: ["Mid", "Support"], Aphelios: ["ADC"], Ashe: ["ADC"], AurelionSol: ["Mid"],
+  Aurora: ["Mid", "Top"], Azir: ["Mid"], Bard: ["Support"], Belveth: ["Jungle"],
+  Blitzcrank: ["Support"], Brand: ["Support", "Mid"], Braum: ["Support"], Briar: ["Jungle"],
+  Caitlyn: ["ADC"], Camille: ["Top"], Cassiopeia: ["Mid"], Chogath: ["Top"], Corki: ["Mid"],
+  Darius: ["Top"], Diana: ["Jungle", "Mid"], DrMundo: ["Top"], Draven: ["ADC"],
+  Ekko: ["Jungle", "Mid"], Elise: ["Jungle"], Evelynn: ["Jungle"], Ezreal: ["ADC"],
+  Fiddlesticks: ["Jungle"], Fiora: ["Top"], Fizz: ["Mid"], Galio: ["Mid", "Support"],
+  Gangplank: ["Top"], Garen: ["Top"], Gnar: ["Top"], Gragas: ["Jungle", "Top"],
+  Graves: ["Jungle"], Gwen: ["Top", "Jungle"], Hecarim: ["Jungle"],
+  Heimerdinger: ["Mid", "Support"], Hwei: ["Mid", "Support"], Illaoi: ["Top"],
+  Irelia: ["Top", "Mid"], Ivern: ["Jungle"], Janna: ["Support"], JarvanIV: ["Jungle"],
+  Jax: ["Top", "Jungle"], Jayce: ["Top", "Mid"], Jhin: ["ADC"], Jinx: ["ADC"],
+  Kaisa: ["ADC"], Kalista: ["ADC"], Karma: ["Support", "Mid"], Karthus: ["Jungle", "Mid"],
+  Kassadin: ["Mid"], Katarina: ["Mid"], Kayle: ["Top", "Mid"], Kayn: ["Jungle"],
+  Kennen: ["Top"], Khazix: ["Jungle"], Kindred: ["Jungle"], Kled: ["Top"], KogMaw: ["ADC"],
+  KSante: ["Top"], Leblanc: ["Mid"], LeeSin: ["Jungle"], Leona: ["Support"],
+  Lillia: ["Jungle"], Lissandra: ["Mid"], Locke: ["Mid"], Lucian: ["ADC", "Mid"],
+  Lulu: ["Support"], Lux: ["Support", "Mid"], Malphite: ["Top", "Jungle"], Malzahar: ["Mid"],
+  Maokai: ["Jungle", "Support"], MasterYi: ["Jungle"], Mel: ["Support", "Mid"],
+  Milio: ["Support"], MissFortune: ["ADC"], Mordekaiser: ["Top"], Morgana: ["Support"],
+  Naafiri: ["Mid", "Jungle"], Nami: ["Support"], Nasus: ["Top"], Nautilus: ["Support"],
+  Neeko: ["Mid", "Support"], Nidalee: ["Jungle"], Nilah: ["ADC"], Nocturne: ["Jungle"],
+  Nunu: ["Jungle"], Olaf: ["Jungle", "Top"], Orianna: ["Mid"], Ornn: ["Top"],
+  Pantheon: ["Support", "Top"], Poppy: ["Jungle", "Top"], Pyke: ["Support"],
+  Qiyana: ["Mid", "Jungle"], Quinn: ["Top"], Rakan: ["Support"], Rammus: ["Jungle"],
+  RekSai: ["Jungle"], Rell: ["Support"], Renata: ["Support"], Renekton: ["Top"],
+  Rengar: ["Jungle"], Riven: ["Top"], Rumble: ["Top", "Jungle"], Ryze: ["Mid"],
+  Samira: ["ADC"], Sejuani: ["Jungle"], Senna: ["Support", "ADC"],
+  Seraphine: ["Support", "ADC"], Sett: ["Top", "Support"], Shaco: ["Jungle"], Shen: ["Top"],
+  Shyvana: ["Jungle"], Singed: ["Top"], Sion: ["Top"], Sivir: ["ADC"], Skarner: ["Jungle"],
+  Smolder: ["ADC"], Sona: ["Support"], Soraka: ["Support"], Swain: ["Support", "Mid"],
+  Sylas: ["Mid", "Jungle"], Syndra: ["Mid"], TahmKench: ["Support", "Top"],
+  Taliyah: ["Jungle", "Mid"], Talon: ["Mid", "Jungle"], Taric: ["Support"], Teemo: ["Top"],
+  Thresh: ["Support"], Tristana: ["ADC", "Mid"], Trundle: ["Jungle", "Top"],
+  Tryndamere: ["Top"], TwistedFate: ["Mid"], Twitch: ["ADC"], Udyr: ["Jungle"],
+  Urgot: ["Top"], Varus: ["ADC"], Vayne: ["ADC", "Top"], Veigar: ["Mid", "Support"],
+  Velkoz: ["Support", "Mid"], Vex: ["Mid"], Vi: ["Jungle"], Viego: ["Jungle"],
+  Viktor: ["Mid"], Vladimir: ["Mid", "Top"], Volibear: ["Jungle", "Top"], Warwick: ["Jungle"],
+  MonkeyKing: ["Jungle", "Top"], Xayah: ["ADC"], Xerath: ["Mid", "Support"],
+  XinZhao: ["Jungle"], Yasuo: ["Mid", "Top"], Yone: ["Mid", "Top"], Yorick: ["Top"],
+  Yunara: ["ADC"], Yuumi: ["Support"], Zaahen: ["Top", "Jungle"], Zac: ["Jungle"],
+  Zed: ["Mid"], Zeri: ["ADC"], Ziggs: ["Mid", "ADC"], Zilean: ["Support"], Zoe: ["Mid"],
+  Zyra: ["Support", "Mid"],
+};
+
+// Champion class tags — sourced live from Data Dragon (champion.tags), zero maintenance.
+const CLASSES = ["Fighter", "Tank", "Mage", "Assassin", "Support", "Marksman"];
+
 let state = {
   people: [], // populated live from Firestore's "people" collection — shared across everyone
   selectedPersonId: null, // local-only UI preference (which tab you're viewing), not shared
@@ -42,6 +96,9 @@ let ddragonVersion = "";
 
 let opggEditingId = null; // person id whose OP.GG link is mid-edit, or null
 let opggDraftValue = ""; // in-progress (unsaved) text for that edit
+
+const laneFilters = new Set(); // active "Lane" filter chips
+const classFilters = new Set(); // active "Class" filter chips
 
 const els = {};
 
@@ -111,6 +168,8 @@ function cacheEls() {
   els.poolGrid = document.getElementById("poolGrid");
   els.allChampionsGrid = document.getElementById("allChampionsGrid");
   els.championSearch = document.getElementById("championSearch");
+  els.laneFilterChips = document.getElementById("laneFilterChips");
+  els.classFilterChips = document.getElementById("classFilterChips");
   els.coverageWarnings = document.getElementById("coverageWarnings");
   els.coverageTable = document.getElementById("coverageTable");
   els.championIconTemplate = document.getElementById("championIconTemplate");
@@ -132,6 +191,26 @@ function bindStaticEvents() {
   });
 
   els.championSearch.addEventListener("input", () => renderAllChampionsGrid());
+
+  renderFilterChips(els.laneFilterChips, LANES, laneFilters);
+  renderFilterChips(els.classFilterChips, CLASSES, classFilters);
+}
+
+function renderFilterChips(container, options, activeSet) {
+  container.innerHTML = "";
+  options.forEach((option) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "filter-chip";
+    btn.textContent = option;
+    btn.addEventListener("click", () => {
+      if (activeSet.has(option)) activeSet.delete(option);
+      else activeSet.add(option);
+      btn.classList.toggle("active", activeSet.has(option));
+      renderAllChampionsGrid();
+    });
+    container.appendChild(btn);
+  });
 }
 
 function switchTab(tab) {
@@ -195,6 +274,7 @@ async function loadChampionData() {
       id: c.id,
       name: c.name,
       image: `${DDRAGON_BASE}/cdn/${ddragonVersion}/img/champion/${c.image.full}`,
+      tags: c.tags || [],
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -466,6 +546,8 @@ function renderAllChampionsGrid() {
   els.allChampionsGrid.innerHTML = "";
   championList
     .filter((c) => c.name.toLowerCase().includes(query))
+    .filter((c) => laneFilters.size === 0 || (COMMON_ROLES[c.id] || []).some((r) => laneFilters.has(r)))
+    .filter((c) => classFilters.size === 0 || c.tags.some((t) => classFilters.has(t)))
     .forEach((champ) => {
       const node = buildChampIcon(champ);
       if (poolIds.has(champ.id)) node.classList.add("in-pool");
