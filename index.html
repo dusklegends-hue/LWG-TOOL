@@ -40,6 +40,8 @@
         <button class="tab-btn" data-tab="matches">Matches</button>
         <button class="tab-btn" data-tab="stats">Stats</button>
         <button class="tab-btn" data-tab="customs">Customs</button>
+        <button class="tab-btn" data-tab="notes">Notes</button>
+        <button class="tab-btn" data-tab="draft">Draft</button>
       </nav>
 
       <div id="poolTab" class="tab-panel active">
@@ -154,6 +156,75 @@
           here automatically — only one person in the lobby needs to run it.
         </p>
         <div id="customGamesList" class="comps-list"></div>
+      </div>
+
+      <div id="notesTab" class="tab-panel">
+        <div class="notes-columns">
+          <div class="notes-column">
+            <h3>Player Notes</h3>
+            <div id="noPersonSelectedNotes" class="empty-state">
+              <p>Select a player to view or add notes about them.</p>
+            </div>
+            <div id="playerNotesContent" class="hidden">
+              <h4 id="notesPersonName" class="notes-person-name"></h4>
+              <form id="addPlayerNoteForm" class="add-note-form">
+                <textarea id="newPlayerNoteText" placeholder="Add a note about this player…" required></textarea>
+                <div class="add-note-form-row">
+                  <input id="newPlayerNoteAuthor" type="text" placeholder="Your name (optional)" autocomplete="off" />
+                  <button type="submit">Add Note</button>
+                </div>
+              </form>
+              <div id="playerNotesList" class="notes-list"></div>
+            </div>
+          </div>
+
+          <div class="notes-column">
+            <h3>Draft Notes</h3>
+            <form id="addDraftNoteForm" class="add-note-form">
+              <textarea id="newDraftNoteText" placeholder="Add a draft/strategy note…" required></textarea>
+              <div class="add-note-form-row">
+                <input id="newDraftNoteAuthor" type="text" placeholder="Your name (optional)" autocomplete="off" />
+                <button type="submit">Add Note</button>
+              </div>
+            </form>
+            <div id="draftNotesList" class="notes-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="draftTab" class="tab-panel">
+        <div class="draft-team-names">
+          <input id="blueTeamNameInput" type="text" class="draft-team-name-input blue" autocomplete="off" />
+          <span class="draft-vs">vs</span>
+          <input id="redTeamNameInput" type="text" class="draft-team-name-input red" autocomplete="off" />
+        </div>
+
+        <div class="draft-turn-bar">
+          <div class="draft-turn-info">
+            <div id="draftPhaseLabel" class="draft-phase-label"></div>
+            <div id="draftTurnLabel" class="draft-turn-label"></div>
+          </div>
+          <div class="draft-turn-actions">
+            <button id="undoDraftBtn" type="button">Undo Last</button>
+            <button id="resetDraftBtn" type="button">Reset Draft</button>
+          </div>
+        </div>
+
+        <input id="draftChampionSearch" type="text" placeholder="Search champions…" autocomplete="off" />
+        <div id="draftChampionGrid" class="champion-grid all-grid"></div>
+
+        <div class="draft-board">
+          <div class="draft-side">
+            <h4 id="blueBoardLabel" class="draft-side-label blue"></h4>
+            <div id="blueBans" class="draft-ban-row"></div>
+            <div id="bluePicks" class="draft-pick-column"></div>
+          </div>
+          <div class="draft-side">
+            <h4 id="redBoardLabel" class="draft-side-label red"></h4>
+            <div id="redBans" class="draft-ban-row"></div>
+            <div id="redPicks" class="draft-pick-column"></div>
+          </div>
+        </div>
       </div>
     </section>
   </main>

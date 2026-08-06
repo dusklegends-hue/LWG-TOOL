@@ -24,6 +24,8 @@ const peopleCol = collection(db, "people");
 const eventsCol = collection(db, "events");
 const teamCompsCol = collection(db, "teamComps");
 const customGamesCol = collection(db, "customGames");
+const notesCol = collection(db, "notes");
+const draftStateDocRef = doc(db, "draftState", "current");
 
 function personDoc(id) {
   return doc(peopleCol, id);
@@ -35,6 +37,10 @@ function eventDoc(id) {
 
 function teamCompDoc(id) {
   return doc(teamCompsCol, id);
+}
+
+function noteDoc(id) {
+  return doc(notesCol, id);
 }
 
 const ROLES = ["Top", "Jungle", "Mid", "ADC", "Support", "Fill"];
@@ -52,6 +58,30 @@ const ROLE_DISPLAY_NAMES = {
   UTILITY: "Support",
   OTHER: "Other/ARAM",
 };
+
+// Standard tournament draft order: 6 bans, 6 picks, 4 more bans, 4 more picks.
+const DRAFT_SEQUENCE = [
+  { side: "blue", type: "ban" },
+  { side: "red", type: "ban" },
+  { side: "blue", type: "ban" },
+  { side: "red", type: "ban" },
+  { side: "blue", type: "ban" },
+  { side: "red", type: "ban" },
+  { side: "blue", type: "pick" },
+  { side: "red", type: "pick" },
+  { side: "red", type: "pick" },
+  { side: "blue", type: "pick" },
+  { side: "blue", type: "pick" },
+  { side: "red", type: "pick" },
+  { side: "red", type: "ban" },
+  { side: "blue", type: "ban" },
+  { side: "red", type: "ban" },
+  { side: "blue", type: "ban" },
+  { side: "red", type: "pick" },
+  { side: "blue", type: "pick" },
+  { side: "blue", type: "pick" },
+  { side: "red", type: "pick" },
+];
 const QUEUE_NAMES = {
   400: "Normal Draft",
   420: "Ranked Solo",
@@ -157,6 +187,10 @@ let statsCache = {}; // personId -> { games, wins, losses, kills, deaths, assist
 let statsLoadingId = null; // person id currently fetching stats, or null
 let customGames = []; // populated live from Firestore's "customGames" collection — written by the local logger script
 
+let notes = []; // populated live from Firestore's "notes" collection — shared across everyone
+let draftState = { blueTeamName: "Blue Team", redTeamName: "Red Team", actions: [] }; // shared live draft
+let draftChampionSearch = ""; // search text for the draft champion picker
+
 const els = {};
 
 if (firebaseConfig.apiKey === "REPLACE_ME") {
@@ -176,6 +210,8 @@ async function init() {
   let eventsSnapshotError = null;
   let teamCompsSnapshotError = null;
   let customGamesSnapshotError = null;
+  let notesSnapshotError = null;
+  let draftStateSnapshotError = null;
 
   const championPromise = loadChampionData().catch((err) => {
     championDataError = err;
@@ -237,18 +273,64 @@ async function init() {
     );
   });
 
+  const firstNotesSnapshotPromise = new Promise((resolve) => {
+    onSnapshot(
+      notesCol,
+      (snapshot) => {
+        handleNotesSnapshot(snapshot);
+        resolve();
+      },
+      (err) => {
+        notesSnapshotError = err;
+        resolve();
+      }
+    );
+  });
+
+  const firstDraftStateSnapshotPromise = new Promise((resolve) => {
+    onSnapshot(
+      draftStateDocRef,
+      (snapshot) => {
+        handleDraftStateSnapshot(snapshot);
+        resolve();
+      },
+      (err) => {
+        draftStateSnapshotError = err;
+        resolve();
+      }
+    );
+  });
+
   await Promise.all([
     championPromise,
     firstPeopleSnapshotPromise,
     firstEventsSnapshotPromise,
     firstTeamCompsSnapshotPromise,
     firstCustomGamesSnapshotPromise,
+    firstNotesSnapshotPromise,
+    firstDraftStateSnapshotPromise,
   ]);
 
-  if (championDataError || peopleSnapshotError || eventsSnapshotError || teamCompsSnapshotError || customGamesSnapshotError) {
+  if (
+    championDataError ||
+    peopleSnapshotError ||
+    eventsSnapshotError ||
+    teamCompsSnapshotError ||
+    customGamesSnapshotError ||
+    notesSnapshotError ||
+    draftStateSnapshotError
+  ) {
     document.getElementById("loadingScreen").innerHTML =
       `<p style="color:#e05252">${championDataError ? "Failed to load champion data." : "Failed to connect to the shared roster."} Check your internet connection and reload.</p>`;
-    console.error(championDataError || peopleSnapshotError || eventsSnapshotError || teamCompsSnapshotError || customGamesSnapshotError);
+    console.error(
+      championDataError ||
+        peopleSnapshotError ||
+        eventsSnapshotError ||
+        teamCompsSnapshotError ||
+        customGamesSnapshotError ||
+        notesSnapshotError ||
+        draftStateSnapshotError
+    );
     return;
   }
 
@@ -262,6 +344,8 @@ async function init() {
   renderMatchesTab();
   renderStatsTab();
   renderCustomsTab();
+  renderNotesTab();
+  renderDraftTab();
 
   document.getElementById("loadingScreen").classList.add("hidden");
   els.app.classList.remove("hidden");
@@ -324,6 +408,31 @@ function cacheEls() {
   els.statsRolesSection = document.getElementById("statsRolesSection");
   els.statsChampionsSection = document.getElementById("statsChampionsSection");
   els.customGamesList = document.getElementById("customGamesList");
+  els.noPersonSelectedNotes = document.getElementById("noPersonSelectedNotes");
+  els.playerNotesContent = document.getElementById("playerNotesContent");
+  els.notesPersonName = document.getElementById("notesPersonName");
+  els.addPlayerNoteForm = document.getElementById("addPlayerNoteForm");
+  els.newPlayerNoteText = document.getElementById("newPlayerNoteText");
+  els.newPlayerNoteAuthor = document.getElementById("newPlayerNoteAuthor");
+  els.playerNotesList = document.getElementById("playerNotesList");
+  els.addDraftNoteForm = document.getElementById("addDraftNoteForm");
+  els.newDraftNoteText = document.getElementById("newDraftNoteText");
+  els.newDraftNoteAuthor = document.getElementById("newDraftNoteAuthor");
+  els.draftNotesList = document.getElementById("draftNotesList");
+  els.blueTeamNameInput = document.getElementById("blueTeamNameInput");
+  els.redTeamNameInput = document.getElementById("redTeamNameInput");
+  els.draftPhaseLabel = document.getElementById("draftPhaseLabel");
+  els.draftTurnLabel = document.getElementById("draftTurnLabel");
+  els.undoDraftBtn = document.getElementById("undoDraftBtn");
+  els.resetDraftBtn = document.getElementById("resetDraftBtn");
+  els.draftChampionSearch = document.getElementById("draftChampionSearch");
+  els.draftChampionGrid = document.getElementById("draftChampionGrid");
+  els.blueBoardLabel = document.getElementById("blueBoardLabel");
+  els.redBoardLabel = document.getElementById("redBoardLabel");
+  els.blueBans = document.getElementById("blueBans");
+  els.redBans = document.getElementById("redBans");
+  els.bluePicks = document.getElementById("bluePicks");
+  els.redPicks = document.getElementById("redPicks");
 }
 
 function bindStaticEvents() {
@@ -400,6 +509,49 @@ function bindStaticEvents() {
     const person = getSelectedPerson();
     if (person) loadStatsData(person);
   });
+
+  els.addPlayerNoteForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const person = getSelectedPerson();
+    if (!person) return;
+    const text = els.newPlayerNoteText.value.trim();
+    if (!text) return;
+    const author = els.newPlayerNoteAuthor.value.trim();
+    addNote("player", person.id, author, text);
+    els.newPlayerNoteText.value = "";
+  });
+
+  els.addDraftNoteForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = els.newDraftNoteText.value.trim();
+    if (!text) return;
+    const author = els.newDraftNoteAuthor.value.trim();
+    addNote("draft", null, author, text);
+    els.newDraftNoteText.value = "";
+  });
+
+  els.blueTeamNameInput.addEventListener("change", () => {
+    saveDraftState({ blueTeamName: els.blueTeamNameInput.value.trim() || "Blue Team" });
+  });
+  els.redTeamNameInput.addEventListener("change", () => {
+    saveDraftState({ redTeamName: els.redTeamNameInput.value.trim() || "Red Team" });
+  });
+
+  els.undoDraftBtn.addEventListener("click", () => {
+    if (draftState.actions.length === 0) return;
+    saveDraftState({ actions: draftState.actions.slice(0, -1) });
+  });
+
+  els.resetDraftBtn.addEventListener("click", () => {
+    if (confirm("Reset the draft? This clears all bans and picks.")) {
+      saveDraftState({ actions: [] });
+    }
+  });
+
+  els.draftChampionSearch.addEventListener("input", () => {
+    draftChampionSearch = els.draftChampionSearch.value;
+    renderDraftChampionGrid();
+  });
 }
 
 function renderFilterChips(container, options, activeSet) {
@@ -428,12 +580,16 @@ function switchTab(tab) {
   document.getElementById("matchesTab").classList.toggle("active", tab === "matches");
   document.getElementById("statsTab").classList.toggle("active", tab === "stats");
   document.getElementById("customsTab").classList.toggle("active", tab === "customs");
+  document.getElementById("notesTab").classList.toggle("active", tab === "notes");
+  document.getElementById("draftTab").classList.toggle("active", tab === "draft");
   if (tab === "overview") renderOverviewTab();
   if (tab === "calendar") renderCalendarTab();
   if (tab === "comps") renderCompsTab();
   if (tab === "matches") renderMatchesTab();
   if (tab === "stats") renderStatsTab();
   if (tab === "customs") renderCustomsTab();
+  if (tab === "notes") renderNotesTab();
+  if (tab === "draft") renderDraftTab();
 }
 
 /* ---------- Shared roster (Firestore) ---------- */
@@ -454,6 +610,7 @@ function handlePeopleSnapshot(snapshot) {
   renderCalendarTab(); // attendee names/lists depend on the current people list
   renderMatchesTab();
   renderStatsTab();
+  renderNotesTab();
 }
 
 function handleEventsSnapshot(snapshot) {
@@ -482,6 +639,33 @@ function handleCustomGamesSnapshot(snapshot) {
     });
 
   renderCustomsTab();
+}
+
+function handleNotesSnapshot(snapshot) {
+  notes = snapshot.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => {
+      const aTime = a.createdAt?.seconds ?? 0;
+      const bTime = b.createdAt?.seconds ?? 0;
+      return bTime - aTime;
+    });
+
+  renderNotesTab();
+}
+
+function handleDraftStateSnapshot(snapshot) {
+  if (snapshot.exists()) {
+    const data = snapshot.data();
+    draftState = {
+      blueTeamName: data.blueTeamName || "Blue Team",
+      redTeamName: data.redTeamName || "Red Team",
+      actions: Array.isArray(data.actions) ? data.actions : [],
+    };
+  } else {
+    draftState = { blueTeamName: "Blue Team", redTeamName: "Red Team", actions: [] };
+  }
+
+  renderDraftTab();
 }
 
 /* ---------- Local-only UI persistence ---------- */
@@ -589,6 +773,9 @@ function selectPerson(id) {
   saveLocalUIState();
   renderPeopleList();
   renderPoolTab();
+  renderMatchesTab();
+  renderStatsTab();
+  renderNotesTab();
   setSidebarOpen(false);
 }
 
@@ -701,6 +888,54 @@ async function toggleCompChampion(comp, role, championId) {
     console.error(err);
     alert("Could not update that team comp — check your connection and try again.");
   }
+}
+
+/* ---------- Notes ---------- */
+
+async function addNote(type, personId, author, text) {
+  const id = crypto.randomUUID();
+  try {
+    await setDoc(noteDoc(id), {
+      type,
+      personId: personId || null,
+      author: author || null,
+      text,
+      // A concrete client Date (not serverTimestamp()) so newly-added notes sort correctly
+      // right away, instead of briefly showing as a null placeholder until the server confirms.
+      createdAt: new Date(),
+    });
+  } catch (err) {
+    console.error(err);
+    alert("Could not add that note — check your connection and try again.");
+  }
+}
+
+async function deleteNote(id) {
+  try {
+    await deleteDoc(noteDoc(id));
+  } catch (err) {
+    console.error(err);
+    alert("Could not delete that note — check your connection and try again.");
+  }
+}
+
+/* ---------- Draft simulator ---------- */
+
+async function saveDraftState(changes) {
+  const next = { ...draftState, ...changes };
+  try {
+    await setDoc(draftStateDocRef, next, { merge: true });
+  } catch (err) {
+    console.error(err);
+    alert("Could not update the draft — check your connection and try again.");
+  }
+}
+
+function pickDraftChampion(championId) {
+  const index = draftState.actions.length;
+  if (index >= DRAFT_SEQUENCE.length) return;
+  if (draftState.actions.includes(championId)) return;
+  saveDraftState({ actions: [...draftState.actions, championId] });
 }
 
 /* ---------- Rendering: People list ---------- */
@@ -2105,4 +2340,186 @@ function buildCustomGameTeam(label, participants) {
   });
 
   return wrap;
+}
+
+/* ---------- Rendering: Notes tab ---------- */
+
+function renderNotesTab() {
+  const person = getSelectedPerson();
+  if (!person) {
+    els.noPersonSelectedNotes.classList.remove("hidden");
+    els.playerNotesContent.classList.add("hidden");
+  } else {
+    els.noPersonSelectedNotes.classList.add("hidden");
+    els.playerNotesContent.classList.remove("hidden");
+    els.notesPersonName.textContent = person.name;
+    renderNotesList(
+      els.playerNotesList,
+      notes.filter((n) => n.type === "player" && n.personId === person.id)
+    );
+  }
+
+  renderNotesList(
+    els.draftNotesList,
+    notes.filter((n) => n.type === "draft")
+  );
+}
+
+function renderNotesList(container, list) {
+  container.innerHTML = "";
+  if (list.length === 0) {
+    container.innerHTML = `<p class="empty-state">No notes yet.</p>`;
+    return;
+  }
+
+  list.forEach((note) => {
+    const card = document.createElement("div");
+    card.className = "note-card";
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "remove-note";
+    deleteBtn.textContent = "×";
+    deleteBtn.title = "Delete note";
+    deleteBtn.addEventListener("click", () => {
+      if (confirm("Delete this note?")) deleteNote(note.id);
+    });
+
+    const header = document.createElement("div");
+    header.className = "note-card-header";
+    const author = document.createElement("span");
+    author.className = "note-card-author";
+    author.textContent = note.author || "Anonymous";
+    const time = document.createElement("span");
+    time.className = "note-card-time";
+    time.textContent = note.createdAt?.toMillis ? formatRelativeTime(note.createdAt.toMillis()) : "";
+    header.append(author, time);
+
+    const text = document.createElement("div");
+    text.className = "note-card-text";
+    text.textContent = note.text;
+
+    card.append(deleteBtn, header, text);
+    container.appendChild(card);
+  });
+}
+
+/* ---------- Rendering: Draft tab ---------- */
+
+function renderDraftTab() {
+  // Don't clobber the input while someone's actively typing a team name.
+  if (document.activeElement !== els.blueTeamNameInput) {
+    els.blueTeamNameInput.value = draftState.blueTeamName;
+  }
+  if (document.activeElement !== els.redTeamNameInput) {
+    els.redTeamNameInput.value = draftState.redTeamName;
+  }
+  els.blueBoardLabel.textContent = draftState.blueTeamName;
+  els.redBoardLabel.textContent = draftState.redTeamName;
+
+  const index = draftState.actions.length;
+  const isComplete = index >= DRAFT_SEQUENCE.length;
+
+  if (isComplete) {
+    els.draftPhaseLabel.textContent = "Draft Complete";
+    els.draftTurnLabel.textContent = "All picks and bans are locked in.";
+    els.draftTurnLabel.className = "draft-turn-label";
+  } else {
+    const current = DRAFT_SEQUENCE[index];
+    const phaseNumber = current.type === "ban" ? (index < 6 ? 1 : 2) : index < 12 ? 1 : 2;
+    els.draftPhaseLabel.textContent = `${current.type === "ban" ? "Ban" : "Pick"} Phase ${phaseNumber}`;
+    const teamName = current.side === "blue" ? draftState.blueTeamName : draftState.redTeamName;
+    els.draftTurnLabel.textContent = `${teamName}'s turn to ${current.type}`;
+    els.draftTurnLabel.className = "draft-turn-label " + current.side;
+  }
+
+  els.undoDraftBtn.disabled = draftState.actions.length === 0;
+
+  renderDraftBoard();
+  renderDraftChampionGrid();
+}
+
+function renderDraftBoard() {
+  const blueBans = [];
+  const bluePicks = [];
+  const redBans = [];
+  const redPicks = [];
+
+  draftState.actions.forEach((championId, i) => {
+    const step = DRAFT_SEQUENCE[i];
+    if (!step) return;
+    const target = step.side === "blue" ? (step.type === "ban" ? blueBans : bluePicks) : step.type === "ban" ? redBans : redPicks;
+    target.push(championId);
+  });
+
+  renderDraftBanRow(els.blueBans, blueBans);
+  renderDraftBanRow(els.redBans, redBans);
+  renderDraftPickColumn(els.bluePicks, bluePicks);
+  renderDraftPickColumn(els.redPicks, redPicks);
+}
+
+function renderDraftBanRow(container, championIds) {
+  container.innerHTML = "";
+  championIds.forEach((id) => {
+    const champ = championsById[id];
+    const img = document.createElement("img");
+    img.src = champ ? champ.image : "";
+    img.alt = champ ? champ.name : id;
+    img.title = champ ? champ.name : id;
+    container.appendChild(img);
+  });
+}
+
+function renderDraftPickColumn(container, championIds) {
+  const totalSlots = 5;
+  container.innerHTML = "";
+  for (let i = 0; i < totalSlots; i++) {
+    const id = championIds[i];
+    if (!id) {
+      const empty = document.createElement("div");
+      empty.className = "draft-pick-row empty";
+      empty.textContent = `Pick ${i + 1}`;
+      container.appendChild(empty);
+      continue;
+    }
+
+    const champ = championsById[id];
+    const row = document.createElement("div");
+    row.className = "draft-pick-row";
+
+    const slot = document.createElement("span");
+    slot.className = "draft-pick-slot";
+    slot.textContent = `${i + 1}.`;
+
+    const img = document.createElement("img");
+    img.src = champ ? champ.image : "";
+    img.alt = champ ? champ.name : id;
+
+    const name = document.createElement("span");
+    name.className = "draft-pick-name";
+    name.textContent = champ ? champ.name : id;
+
+    row.append(slot, img, name);
+    container.appendChild(row);
+  }
+}
+
+function renderDraftChampionGrid() {
+  const query = draftChampionSearch.trim().toLowerCase();
+  const usedIds = new Set(draftState.actions);
+  const isComplete = draftState.actions.length >= DRAFT_SEQUENCE.length;
+
+  els.draftChampionGrid.innerHTML = "";
+  championList
+    .filter((c) => c.name.toLowerCase().includes(query))
+    .forEach((champ) => {
+      const node = buildChampIcon(champ);
+      const unavailable = usedIds.has(champ.id) || isComplete;
+      if (unavailable) {
+        node.classList.add("draft-unavailable");
+      } else {
+        node.addEventListener("click", () => pickDraftChampion(champ.id));
+      }
+      els.draftChampionGrid.appendChild(node);
+    });
 }

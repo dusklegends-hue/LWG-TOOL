@@ -9,6 +9,8 @@
   --text-dim: #8a93a3;
   --accent: #0ac8b9;
   --danger: #e05252;
+  --draft-blue: #4aa3df;
+  --draft-red: #e05252;
   --radius: 8px;
 }
 
@@ -1346,6 +1348,286 @@ h3 {
   font-size: 0.78rem;
 }
 
+.notes-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+.notes-column h3 {
+  margin-top: 0;
+}
+
+.notes-person-name {
+  color: var(--gold-bright);
+  margin: 0 0 10px;
+}
+
+.add-note-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.add-note-form textarea {
+  width: 100%;
+  min-height: 70px;
+  resize: vertical;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 10px;
+  border-radius: var(--radius);
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+
+.add-note-form-row {
+  display: flex;
+  gap: 8px;
+}
+
+.add-note-form-row input {
+  flex: 1;
+}
+
+.add-note-form-row button {
+  background: var(--gold);
+  color: var(--bg);
+  border-color: var(--gold);
+  font-weight: 600;
+}
+
+.add-note-form-row button:hover {
+  background: var(--gold-bright);
+}
+
+.notes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.note-card {
+  position: relative;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 34px 12px 14px;
+}
+
+.note-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.note-card-author {
+  color: var(--gold-bright);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.note-card-time {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  flex-shrink: 0;
+}
+
+.note-card-text {
+  color: var(--text);
+  font-size: 0.88rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.note-card .remove-note {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.note-card .remove-note:hover {
+  color: var(--danger);
+  border: none;
+}
+
+.draft-team-names {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.draft-team-name-input {
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 14px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  text-align: center;
+  width: 220px;
+}
+
+.draft-team-name-input.blue {
+  color: var(--draft-blue);
+  border-color: var(--draft-blue);
+}
+
+.draft-team-name-input.red {
+  color: var(--draft-red);
+  border-color: var(--draft-red);
+}
+
+.draft-vs {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+}
+
+.draft-turn-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 18px;
+  margin-bottom: 16px;
+}
+
+.draft-phase-label {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.draft-turn-label {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--gold-bright);
+}
+
+.draft-turn-label.blue {
+  color: var(--draft-blue);
+}
+
+.draft-turn-label.red {
+  color: var(--draft-red);
+}
+
+.draft-turn-actions {
+  display: flex;
+  gap: 8px;
+}
+
+#draftChampionSearch {
+  width: 100%;
+  max-width: 400px;
+  margin-bottom: 14px;
+}
+
+#draftChampionGrid {
+  margin-bottom: 24px;
+}
+
+#draftChampionGrid .champ-icon.draft-unavailable {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.draft-board {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.draft-side-label {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 0.85rem;
+  margin: 0 0 10px;
+}
+
+.draft-side-label.blue {
+  color: var(--draft-blue);
+}
+
+.draft-side-label.red {
+  color: var(--draft-red);
+}
+
+.draft-ban-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+  min-height: 40px;
+}
+
+.draft-ban-row img {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  filter: grayscale(0.8);
+  opacity: 0.7;
+}
+
+.draft-pick-column {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 40px;
+}
+
+.draft-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+}
+
+.draft-pick-row img {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.draft-pick-row .draft-pick-slot {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  min-width: 16px;
+}
+
+.draft-pick-row .draft-pick-name {
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.draft-pick-row.empty {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  font-style: italic;
+  padding: 8px 10px;
+}
+
 /* ---------- Mobile ---------- */
 
 @media (max-width: 768px) {
@@ -1466,6 +1748,29 @@ h3 {
 
   .custom-game-teams {
     grid-template-columns: 1fr;
+  }
+
+  .notes-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .draft-board {
+    grid-template-columns: 1fr;
+  }
+
+  .draft-team-names {
+    flex-wrap: wrap;
+  }
+
+  .draft-team-name-input {
+    width: 150px;
+    font-size: 0.9rem;
+  }
+
+  .draft-turn-bar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
   }
 
   .comp-role-row {
