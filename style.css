@@ -1,0 +1,509 @@
+:root {
+  --bg: #0a0e14;
+  --bg-panel: #10151f;
+  --bg-panel-2: #161c2a;
+  --border: #262e40;
+  --gold: #c8aa6e;
+  --gold-bright: #f0e6d2;
+  --text: #cdd6e0;
+  --text-dim: #8a93a3;
+  --accent: #0ac8b9;
+  --danger: #e05252;
+  --radius: 8px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 24px;
+  background: linear-gradient(180deg, #161c2a, #10151f);
+  border-bottom: 2px solid var(--gold);
+}
+
+.topbar h1 {
+  font-size: 1.3rem;
+  margin: 0;
+  color: var(--gold-bright);
+  letter-spacing: 0.5px;
+}
+
+.patch-badge {
+  font-size: 0.75rem;
+  color: var(--bg);
+  background: var(--gold);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.loading-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 70vh;
+  gap: 16px;
+  color: var(--text-dim);
+}
+
+.spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid var(--border);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.hidden { display: none !important; }
+
+.app {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  height: calc(100vh - 58px);
+}
+
+.sidebar {
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.sidebar h2 {
+  font-size: 0.95rem;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin: 0 0 12px;
+}
+
+.add-person-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.add-person-form input {
+  width: 100%;
+}
+
+.add-person-form button {
+  align-self: flex-end;
+}
+
+input[type="text"] {
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+}
+
+input[type="text"]:focus {
+  outline: none;
+  border-color: var(--gold);
+}
+
+button {
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+button:hover {
+  border-color: var(--gold);
+  color: var(--gold-bright);
+}
+
+.add-person-form button {
+  background: var(--gold);
+  color: var(--bg);
+  border-color: var(--gold);
+  font-weight: 600;
+}
+
+.add-person-form button:hover {
+  background: var(--gold-bright);
+}
+
+.people-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.person-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.person-row:hover {
+  background: var(--bg-panel-2);
+}
+
+.person-row.selected {
+  background: var(--bg-panel-2);
+  border-color: var(--gold);
+}
+
+.person-row .person-name {
+  display: flex;
+  flex-direction: column;
+}
+
+.person-row .pool-count {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.opgg-link {
+  font-size: 0.72rem;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.opgg-link:hover {
+  text-decoration: underline;
+}
+
+.person-row .opgg-link {
+  display: inline-block;
+  margin-top: 2px;
+}
+
+.person-row .remove-person {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 1rem;
+  padding: 2px 6px;
+  line-height: 1;
+}
+
+.person-row .remove-person:hover {
+  color: var(--danger);
+  border: none;
+}
+
+.main-panel {
+  padding: 20px 28px;
+  overflow-y: auto;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+}
+
+.tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 10px 16px;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+.tab-btn:hover {
+  color: var(--gold-bright);
+  border: none;
+  border-bottom: 2px solid transparent;
+}
+
+.tab-btn.active {
+  color: var(--gold-bright);
+  border-bottom: 2px solid var(--gold);
+}
+
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+.empty-state {
+  color: var(--text-dim);
+  padding: 40px 0;
+  text-align: center;
+}
+
+.person-pool-header {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.person-pool-header h2 {
+  color: var(--gold-bright);
+  margin: 0;
+}
+
+.opgg-box {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.opgg-box .opgg-link {
+  font-size: 0.85rem;
+}
+
+.opgg-box .opgg-edit-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  padding: 0;
+  font-size: 0.78rem;
+  text-decoration: underline;
+}
+
+.opgg-box .opgg-edit-btn:hover {
+  color: var(--gold-bright);
+  border: none;
+}
+
+.opgg-box .opgg-edit-form {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.opgg-box .opgg-edit-form input {
+  min-width: 260px;
+}
+
+h3 {
+  color: var(--gold);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin: 20px 0 10px;
+}
+
+#championSearch {
+  width: 100%;
+  max-width: 400px;
+  margin-bottom: 14px;
+}
+
+.champion-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 12px;
+}
+
+.pool-grid:empty::after {
+  content: "No champions added yet.";
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  grid-column: 1 / -1;
+}
+
+.champ-icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 4px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-panel-2);
+  cursor: pointer;
+  text-align: center;
+  position: relative;
+}
+
+.champ-icon:hover {
+  border-color: var(--gold);
+  transform: translateY(-2px);
+}
+
+.champ-icon img {
+  width: 68px;
+  height: 68px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.champ-name {
+  font-size: 0.72rem;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.champ-icon.in-pool {
+  border-color: var(--accent);
+}
+
+.champ-icon .role-select,
+.champ-icon .tier-select {
+  width: 100%;
+  font-size: 0.65rem;
+  background: var(--bg);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-top: 2px;
+  padding: 1px;
+}
+
+.tier-chip {
+  border-radius: 4px;
+  font-weight: 700;
+  text-align: center;
+  color: #0a0e14;
+  background: var(--border);
+  z-index: 1;
+}
+
+.tier-chip[hidden] {
+  display: none;
+}
+
+.tier-chip[data-tier="S"] { background: #ff4655; color: #fff; }
+.tier-chip[data-tier="A"] { background: #f0a020; }
+.tier-chip[data-tier="B"] { background: #4aa3df; }
+.tier-chip[data-tier="C"] { background: #8a93a3; }
+
+.tier-badge {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 3px;
+  font-size: 0.68rem;
+  line-height: 18px;
+}
+
+.champ-icon .remove-champ {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background: rgba(0,0,0,0.6);
+  color: var(--danger);
+  border: none;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.coverage-warnings {
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.warning-chip {
+  background: rgba(224, 82, 82, 0.15);
+  border: 1px solid var(--danger);
+  color: #ff9d9d;
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  width: fit-content;
+}
+
+.coverage-table {
+  overflow-x: auto;
+}
+
+.coverage-table table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 700px;
+}
+
+.coverage-table th, .coverage-table td {
+  border: 1px solid var(--border);
+  padding: 10px;
+  vertical-align: top;
+  text-align: left;
+}
+
+.coverage-table th {
+  background: var(--bg-panel-2);
+  color: var(--gold);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+}
+
+.coverage-table td.person-cell {
+  color: var(--gold-bright);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.coverage-table .role-champs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.coverage-table .mini-champ-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.coverage-table .mini-champ {
+  width: 36px;
+  height: 36px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  display: block;
+}
+
+.coverage-table .mini-tier-badge {
+  position: absolute;
+  top: -5px;
+  left: -5px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 2px;
+  font-size: 0.55rem;
+  line-height: 14px;
+}
+
+.coverage-table .no-champs {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}

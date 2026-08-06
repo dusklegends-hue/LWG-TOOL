@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Champion Pool Manager</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Champion Pool Manager</h1>
+    <span id="patchBadge" class="patch-badge">loading…</span>
+  </header>
+
+  <div id="loadingScreen" class="loading-screen">
+    <div class="spinner"></div>
+    <p>Loading champion data from Riot Data Dragon…</p>
+  </div>
+
+  <main id="app" class="app hidden">
+    <aside class="sidebar">
+      <h2>People</h2>
+      <form id="addPersonForm" class="add-person-form">
+        <input id="newPersonName" type="text" placeholder="Name…" autocomplete="off" required />
+        <input id="newPersonOpgg" type="text" placeholder="na.op.gg link (optional)" autocomplete="off" />
+        <button type="submit">Add</button>
+      </form>
+      <ul id="peopleList" class="people-list"></ul>
+    </aside>
+
+    <section class="main-panel">
+      <nav class="tabs">
+        <button class="tab-btn active" data-tab="pool">Pool</button>
+        <button class="tab-btn" data-tab="overview">Overview</button>
+      </nav>
+
+      <div id="poolTab" class="tab-panel active">
+        <div id="noPersonSelected" class="empty-state">
+          <p>Select or add a person to manage their champion pool.</p>
+        </div>
+
+        <div id="personPool" class="person-pool hidden">
+          <div class="person-pool-header">
+            <h2 id="selectedPersonName"></h2>
+            <div id="opggBox" class="opgg-box"></div>
+          </div>
+
+          <h3>Their Pool</h3>
+          <div id="poolGrid" class="champion-grid pool-grid"></div>
+
+          <h3>Add Champions</h3>
+          <input id="championSearch" type="text" placeholder="Search champions…" autocomplete="off" />
+          <div id="allChampionsGrid" class="champion-grid all-grid"></div>
+        </div>
+      </div>
+
+      <div id="overviewTab" class="tab-panel">
+        <h2>Role Coverage</h2>
+        <div id="coverageWarnings" class="coverage-warnings"></div>
+        <div id="coverageTable" class="coverage-table"></div>
+      </div>
+    </section>
+  </main>
+
+  <template id="championIconTemplate">
+    <div class="champ-icon" tabindex="0">
+      <img loading="lazy" />
+      <span class="champ-name"></span>
+    </div>
+  </template>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
