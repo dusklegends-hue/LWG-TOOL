@@ -41,6 +41,20 @@ const COMP_ROLES = ["Top", "Jungle", "Mid", "ADC", "Support"];
 const TIERS = ["S", "A", "B", "C"];
 const UI_STORAGE_KEY = "championPoolManager.ui.v1";
 const DDRAGON_BASE = "https://ddragon.leagueoflegends.com";
+const RIOT_PROXY_BASE = "https://lwg-riot-proxy.dusklegends-lwg.workers.dev";
+const QUEUE_NAMES = {
+  400: "Normal Draft",
+  420: "Ranked Solo",
+  430: "Normal Blind",
+  440: "Ranked Flex",
+  450: "ARAM",
+  700: "Clash",
+  830: "Co-op vs AI",
+  840: "Co-op vs AI",
+  850: "Co-op vs AI",
+  900: "URF",
+  1700: "Arena",
+};
 
 // Lanes a champion is commonly played in — Data Dragon has no such field, so this is
 // hand-curated and can lag behind brand-new champion releases until updated.
@@ -105,6 +119,7 @@ let state = {
 };
 
 let championsById = {}; // id -> { id, name, image }
+let championsByKey = {}; // numeric Data Dragon "key" (as a string) -> champion, for Spectator-V5's numeric championId
 let championList = []; // sorted array of champions
 let ddragonVersion = "";
 
@@ -123,6 +138,11 @@ let eventDraft = null; // { title, date, time, timezone, notes } — in-progress
 let teamComps = []; // populated live from Firestore's "teamComps" collection — shared across everyone
 let activeCompPickerKey = null; // "{compId}:{role}" of the champion picker currently expanded, or null
 let compPickerSearch = ""; // search text for the currently expanded picker
+
+let riotIdEditingId = null; // person id whose Riot ID is mid-edit, or null
+let riotIdDraftValue = ""; // in-progress (unsaved) text for that edit
+let matchesCache = {}; // personId -> { ranked, live, matches, loadError }
+let matchesLoadingId = null; // person id currently fetching match data, or null
 
 const els = {};
 
@@ -210,6 +230,7 @@ async function init() {
   renderOverviewTab();
   renderCalendarTab();
   renderCompsTab();
+  renderMatchesTab();
 
   document.getElementById("loadingScreen").classList.add("hidden");
   els.app.classList.remove("hidden");
@@ -250,6 +271,16 @@ function cacheEls() {
   els.addCompForm = document.getElementById("addCompForm");
   els.newCompName = document.getElementById("newCompName");
   els.compsList = document.getElementById("compsList");
+  els.newPersonRiotId = document.getElementById("newPersonRiotId");
+  els.noPersonSelectedMatches = document.getElementById("noPersonSelectedMatches");
+  els.matchesContent = document.getElementById("matchesContent");
+  els.matchesPersonName = document.getElementById("matchesPersonName");
+  els.riotIdBox = document.getElementById("riotIdBox");
+  els.loadMatchesBtn = document.getElementById("loadMatchesBtn");
+  els.matchesStatus = document.getElementById("matchesStatus");
+  els.rankedSection = document.getElementById("rankedSection");
+  els.liveSection = document.getElementById("liveSection");
+  els.historySection = document.getElementById("historySection");
 }
 
 function bindStaticEvents() {
@@ -258,9 +289,11 @@ function bindStaticEvents() {
     const name = els.newPersonName.value.trim();
     if (!name) return;
     const opgg = els.newPersonOpgg.value.trim();
-    addPerson(name, opgg);
+    const riotId = els.newPersonRiotId.value.trim();
+    addPerson(name, opgg, riotId);
     els.newPersonName.value = "";
     els.newPersonOpgg.value = "";
+    els.newPersonRiotId.value = "";
   });
 
   document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -311,6 +344,11 @@ function bindStaticEvents() {
     addTeamComp(name);
     els.newCompName.value = "";
   });
+
+  els.loadMatchesBtn.addEventListener("click", () => {
+    const person = getSelectedPerson();
+    if (person) loadMatchData(person);
+  });
 }
 
 function renderFilterChips(container, options, activeSet) {
@@ -336,9 +374,11 @@ function switchTab(tab) {
   document.getElementById("overviewTab").classList.toggle("active", tab === "overview");
   document.getElementById("calendarTab").classList.toggle("active", tab === "calendar");
   document.getElementById("compsTab").classList.toggle("active", tab === "comps");
+  document.getElementById("matchesTab").classList.toggle("active", tab === "matches");
   if (tab === "overview") renderOverviewTab();
   if (tab === "calendar") renderCalendarTab();
   if (tab === "comps") renderCompsTab();
+  if (tab === "matches") renderMatchesTab();
 }
 
 /* ---------- Shared roster (Firestore) ---------- */
@@ -357,6 +397,7 @@ function handlePeopleSnapshot(snapshot) {
   renderPoolTab();
   renderOverviewTab();
   renderCalendarTab(); // attendee names/lists depend on the current people list
+  renderMatchesTab();
 }
 
 function handleEventsSnapshot(snapshot) {
@@ -413,21 +454,43 @@ async function loadChampionData() {
       name: c.name,
       image: `${DDRAGON_BASE}/cdn/${ddragonVersion}/img/champion/${c.image.full}`,
       tags: c.tags || [],
+      key: c.key,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
   championsById = {};
-  championList.forEach((c) => (championsById[c.id] = c));
+  championsByKey = {};
+  championList.forEach((c) => {
+    championsById[c.id] = c;
+    championsByKey[c.key] = c;
+  });
+}
+
+function findChampionByName(championName) {
+  if (!championName) return null;
+  if (championsById[championName]) return championsById[championName];
+  const lower = championName.toLowerCase();
+  return championList.find((c) => c.id.toLowerCase() === lower) || null;
+}
+
+function findChampionByKey(championKey) {
+  return championsByKey[String(championKey)] || null;
 }
 
 /* ---------- People ---------- */
 
-async function addPerson(name, opgg) {
+async function addPerson(name, opgg, riotId) {
   const id = crypto.randomUUID();
   state.selectedPersonId = id;
   saveLocalUIState();
   try {
-    await setDoc(personDoc(id), { name, opgg: normalizeUrl(opgg), pool: [] });
+    await setDoc(personDoc(id), {
+      name,
+      opgg: normalizeUrl(opgg),
+      pool: [],
+      riotId: riotId ? riotId.trim() : null,
+      puuid: null,
+    });
   } catch (err) {
     console.error(err);
     alert("Could not add that player — check your connection and try again.");
@@ -694,6 +757,79 @@ function renderOpggBox(person) {
     renderOpggBox(person);
   });
   els.opggBox.appendChild(editBtn);
+}
+
+function renderRiotIdBox(person) {
+  els.riotIdBox.innerHTML = "";
+
+  if (riotIdEditingId === person.id) {
+    const form = document.createElement("form");
+    form.className = "opgg-edit-form";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "Riot ID e.g. Name#Tag";
+    input.value = riotIdDraftValue;
+    input.autocomplete = "off";
+    input.addEventListener("input", () => {
+      riotIdDraftValue = input.value;
+    });
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "submit";
+    saveBtn.textContent = "Save";
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", () => {
+      riotIdEditingId = null;
+      renderRiotIdBox(person);
+    });
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const newRiotId = riotIdDraftValue.trim() || null;
+      const changed = newRiotId !== (person.riotId || null);
+      riotIdEditingId = null;
+      renderRiotIdBox(person);
+      try {
+        // A changed Riot ID points at a different account, so the cached puuid (and any
+        // locally-cached match data for the old account) would otherwise be stale.
+        await updateDoc(personDoc(person.id), { riotId: newRiotId, puuid: changed ? null : person.puuid });
+        if (changed) {
+          delete matchesCache[person.id];
+          renderMatchesTab();
+        }
+      } catch (err) {
+        console.error(err);
+        alert("Could not save that Riot ID — check your connection and try again.");
+      }
+    });
+
+    form.append(input, saveBtn, cancelBtn);
+    els.riotIdBox.appendChild(form);
+    input.focus();
+    return;
+  }
+
+  if (person.riotId) {
+    const label = document.createElement("span");
+    label.className = "opgg-link";
+    label.textContent = person.riotId;
+    els.riotIdBox.appendChild(label);
+  }
+
+  const editBtn = document.createElement("button");
+  editBtn.type = "button";
+  editBtn.className = "opgg-edit-btn";
+  editBtn.textContent = person.riotId ? "edit" : "+ add Riot ID";
+  editBtn.addEventListener("click", () => {
+    riotIdEditingId = person.id;
+    riotIdDraftValue = person.riotId || "";
+    renderRiotIdBox(person);
+  });
+  els.riotIdBox.appendChild(editBtn);
 }
 
 function renderPersonPoolGrid(person) {
@@ -1320,4 +1456,262 @@ function buildCompChampionPicker(comp, role) {
   renderGrid();
   wrap.append(search, grid);
   return wrap;
+}
+
+/* ---------- Match data (Riot API via Cloudflare proxy) ---------- */
+
+function riotErrorMessage(body, fallback) {
+  if (typeof body?.status?.message === "string") return body.status.message;
+  if (typeof body?.error === "string") return body.error;
+  return fallback;
+}
+
+function splitRiotId(riotId) {
+  const idx = riotId.lastIndexOf("#");
+  if (idx === -1) return [null, null];
+  return [riotId.slice(0, idx).trim(), riotId.slice(idx + 1).trim()];
+}
+
+async function loadMatchData(person) {
+  if (!person.riotId) return;
+
+  matchesLoadingId = person.id;
+  renderMatchesTab();
+
+  try {
+    let puuid = person.puuid || null;
+
+    if (!puuid) {
+      const [gameName, tagLine] = splitRiotId(person.riotId);
+      if (!gameName || !tagLine) throw new Error("Riot ID should look like Name#Tag");
+
+      const accountRes = await fetch(
+        `${RIOT_PROXY_BASE}/account?gameName=${encodeURIComponent(gameName)}&tagLine=${encodeURIComponent(tagLine)}`
+      );
+      const accountData = await accountRes.json();
+      if (!accountRes.ok) {
+        throw new Error(riotErrorMessage(accountData, "Could not find that Riot ID"));
+      }
+      puuid = accountData.puuid;
+      // Cache the resolved puuid on the shared player doc so future loads (by anyone) skip this lookup.
+      await updateDoc(personDoc(person.id), { puuid });
+    }
+
+    const [rankedRes, liveRes, matchIdsRes] = await Promise.all([
+      fetch(`${RIOT_PROXY_BASE}/ranked?puuid=${puuid}`),
+      fetch(`${RIOT_PROXY_BASE}/live?puuid=${puuid}`),
+      fetch(`${RIOT_PROXY_BASE}/matches?puuid=${puuid}&count=5`),
+    ]);
+    const ranked = await rankedRes.json();
+    const live = await liveRes.json();
+    const matchIds = await matchIdsRes.json();
+
+    if (!rankedRes.ok) throw new Error(riotErrorMessage(ranked, "Could not load ranked stats"));
+    if (!liveRes.ok) throw new Error(riotErrorMessage(live, "Could not load live game status"));
+    if (!matchIdsRes.ok) throw new Error(riotErrorMessage(matchIds, "Could not load match history"));
+
+    const matches = await Promise.all(
+      (Array.isArray(matchIds) ? matchIds : []).map((id) =>
+        fetch(`${RIOT_PROXY_BASE}/match/${id}`).then((r) => r.json())
+      )
+    );
+
+    matchesCache[person.id] = { ranked, live, matches, puuid };
+  } catch (err) {
+    console.error(err);
+    matchesCache[person.id] = { loadError: err.message || "Something went wrong loading match data." };
+  } finally {
+    matchesLoadingId = null;
+    renderMatchesTab();
+  }
+}
+
+function renderMatchesTab() {
+  const person = getSelectedPerson();
+  if (!person) {
+    els.noPersonSelectedMatches.classList.remove("hidden");
+    els.matchesContent.classList.add("hidden");
+    return;
+  }
+  els.noPersonSelectedMatches.classList.add("hidden");
+  els.matchesContent.classList.remove("hidden");
+  els.matchesPersonName.textContent = person.name;
+  renderRiotIdBox(person);
+
+  const isLoading = matchesLoadingId === person.id;
+  els.loadMatchesBtn.disabled = isLoading || !person.riotId;
+  els.loadMatchesBtn.textContent = isLoading ? "Loading…" : "Load match data";
+
+  const cached = matchesCache[person.id];
+
+  els.matchesStatus.classList.remove("error");
+  if (!person.riotId) {
+    els.matchesStatus.textContent = "Add a Riot ID above to pull match data.";
+  } else if (isLoading) {
+    els.matchesStatus.textContent = "Fetching from Riot…";
+  } else if (cached && cached.loadError) {
+    els.matchesStatus.textContent = cached.loadError;
+    els.matchesStatus.classList.add("error");
+  } else {
+    els.matchesStatus.textContent = "";
+  }
+
+  renderRankedSection(cached);
+  renderLiveSection(cached);
+  renderHistorySection(cached);
+}
+
+function titleCase(str) {
+  if (!str) return "";
+  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+}
+
+function formatDuration(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${s}s`;
+}
+
+function formatRelativeTime(timestampMs) {
+  const diffMs = Date.now() - timestampMs;
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function renderRankedSection(cached) {
+  els.rankedSection.innerHTML = "";
+  if (!cached || cached.loadError || !cached.ranked) return;
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Ranked";
+  els.rankedSection.appendChild(heading);
+
+  if (cached.ranked.length === 0) {
+    const p = document.createElement("p");
+    p.className = "empty-state";
+    p.textContent = "Unranked.";
+    els.rankedSection.appendChild(p);
+    return;
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "ranked-cards";
+
+  cached.ranked.forEach((entry) => {
+    const card = document.createElement("div");
+    card.className = "ranked-card";
+
+    const queue = document.createElement("div");
+    queue.className = "ranked-queue";
+    queue.textContent =
+      entry.queueType === "RANKED_SOLO_5x5" ? "Solo/Duo" : entry.queueType === "RANKED_FLEX_SR" ? "Flex" : entry.queueType;
+
+    const tier = document.createElement("div");
+    tier.className = "ranked-tier";
+    tier.textContent = `${titleCase(entry.tier)} ${entry.rank} — ${entry.leaguePoints} LP`;
+
+    const record = document.createElement("div");
+    record.className = "ranked-record";
+    const total = entry.wins + entry.losses;
+    const winRate = total > 0 ? Math.round((entry.wins / total) * 100) : 0;
+    record.textContent = `${entry.wins}W ${entry.losses}L (${winRate}%)`;
+
+    card.append(queue, tier, record);
+    wrap.appendChild(card);
+  });
+
+  els.rankedSection.appendChild(wrap);
+}
+
+function renderLiveSection(cached) {
+  els.liveSection.innerHTML = "";
+  if (!cached || cached.loadError || !cached.live) return;
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Live Game";
+  els.liveSection.appendChild(heading);
+
+  const card = document.createElement("div");
+  card.className = "live-card" + (cached.live.inGame ? " in-game" : "");
+
+  const status = document.createElement("div");
+  status.className = "live-status";
+  status.textContent = cached.live.inGame ? "Currently in a game" : "Not in a game";
+  card.appendChild(status);
+
+  if (cached.live.inGame && Array.isArray(cached.live.participants)) {
+    const champsWrap = document.createElement("div");
+    champsWrap.className = "live-champs";
+    cached.live.participants.forEach((p) => {
+      const champ = findChampionByKey(p.championId);
+      if (!champ) return;
+      const img = document.createElement("img");
+      img.src = champ.image;
+      img.alt = champ.name;
+      img.title = champ.name;
+      champsWrap.appendChild(img);
+    });
+    card.appendChild(champsWrap);
+  }
+
+  els.liveSection.appendChild(card);
+}
+
+function renderHistorySection(cached) {
+  els.historySection.innerHTML = "";
+  if (!cached || cached.loadError || !cached.matches) return;
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Recent Matches";
+  els.historySection.appendChild(heading);
+
+  if (cached.matches.length === 0) {
+    const p = document.createElement("p");
+    p.className = "empty-state";
+    p.textContent = "No recent matches found.";
+    els.historySection.appendChild(p);
+    return;
+  }
+
+  cached.matches.forEach((match) => {
+    if (!match || !match.info) return;
+    const me = match.info.participants.find((p) => p.puuid === cached.puuid);
+    if (!me) return;
+
+    const card = document.createElement("div");
+    card.className = "match-card " + (me.win ? "win" : "loss");
+
+    const champ = findChampionByName(me.championName);
+    const img = document.createElement("img");
+    img.src = champ ? champ.image : "";
+    img.alt = me.championName;
+
+    const infoWrap = document.createElement("div");
+    infoWrap.className = "match-card-info";
+    const champName = document.createElement("div");
+    champName.className = "match-card-champ";
+    champName.textContent = champ ? champ.name : me.championName;
+    const meta = document.createElement("div");
+    meta.className = "match-card-meta";
+    const queueName = QUEUE_NAMES[match.info.queueId] || `Queue ${match.info.queueId}`;
+    meta.textContent = `${queueName} · ${formatDuration(match.info.gameDuration)} · ${formatRelativeTime(match.info.gameEndTimestamp || match.info.gameCreation)}`;
+    infoWrap.append(champName, meta);
+
+    const resultWrap = document.createElement("div");
+    resultWrap.className = "match-card-result";
+    const resultText = document.createElement("div");
+    resultText.className = "result-text";
+    resultText.textContent = me.win ? "Victory" : "Defeat";
+    const kdaText = document.createElement("div");
+    kdaText.className = "kda-text";
+    kdaText.textContent = `${me.kills}/${me.deaths}/${me.assists}`;
+    resultWrap.append(resultText, kdaText);
+
+    card.append(img, infoWrap, resultWrap);
+    els.historySection.appendChild(card);
+  });
 }
