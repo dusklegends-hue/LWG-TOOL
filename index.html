@@ -210,21 +210,25 @@
           </div>
         </div>
 
-        <input id="draftChampionSearch" type="text" placeholder="Search champions…" autocomplete="off" />
-        <div id="draftChampionGrid" class="champion-grid all-grid"></div>
-
         <div class="draft-board">
-          <div class="draft-side">
+          <div class="draft-side blue">
             <h4 id="blueBoardLabel" class="draft-side-label blue"></h4>
+            <div class="draft-section-label">Bans</div>
             <div id="blueBans" class="draft-ban-row"></div>
+            <div class="draft-section-label">Picks</div>
             <div id="bluePicks" class="draft-pick-column"></div>
           </div>
-          <div class="draft-side">
+          <div class="draft-side red">
             <h4 id="redBoardLabel" class="draft-side-label red"></h4>
+            <div class="draft-section-label">Bans</div>
             <div id="redBans" class="draft-ban-row"></div>
+            <div class="draft-section-label">Picks</div>
             <div id="redPicks" class="draft-pick-column"></div>
           </div>
         </div>
+
+        <input id="draftChampionSearch" type="text" placeholder="Search champions…" autocomplete="off" />
+        <div id="draftChampionGrid" class="champion-grid all-grid"></div>
       </div>
     </section>
   </main>
