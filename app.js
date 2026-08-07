@@ -1281,30 +1281,40 @@ function renderOverviewTab() {
     }
   });
 
-  const table = document.createElement("table");
-  const thead = document.createElement("thead");
-  const headRow = document.createElement("tr");
-  headRow.innerHTML = `<th>Player</th>` + ROLES.map((r) => `<th>${r}</th>`).join("");
-  thead.appendChild(headRow);
-  table.appendChild(thead);
+  const grid = document.createElement("div");
+  grid.className = "overview-grid";
+  const tierRank = (t) => (t ? TIERS.indexOf(t) : TIERS.length);
 
-  const tbody = document.createElement("tbody");
   state.people.forEach((person) => {
-    const row = document.createElement("tr");
-    const nameCell = document.createElement("td");
-    nameCell.className = "person-cell";
-    nameCell.textContent = person.name;
-    row.appendChild(nameCell);
+    const card = document.createElement("div");
+    card.className = "overview-card";
 
-    ROLES.forEach((role) => {
-      const cell = document.createElement("td");
-      const champsForRole = person.pool.filter((entry) => entry.role === role);
-      if (champsForRole.length === 0) {
-        cell.innerHTML = `<span class="no-champs">—</span>`;
-      } else {
+    const header = document.createElement("div");
+    header.className = "overview-card-header";
+    header.textContent = person.name;
+    card.appendChild(header);
+
+    const rolesWithChamps = ROLES.filter((role) => person.pool.some((entry) => entry.role === role));
+
+    if (rolesWithChamps.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "overview-card-empty";
+      empty.textContent = "No champions assigned yet.";
+      card.appendChild(empty);
+    } else {
+      rolesWithChamps.forEach((role) => {
+        const roleRow = document.createElement("div");
+        roleRow.className = "overview-role-row";
+
+        const label = document.createElement("span");
+        label.className = "overview-role-label";
+        label.textContent = role;
+        roleRow.appendChild(label);
+
         const wrap = document.createElement("div");
         wrap.className = "role-champs";
-        const tierRank = (t) => (t ? TIERS.indexOf(t) : TIERS.length);
+
+        const champsForRole = person.pool.filter((entry) => entry.role === role);
         [...champsForRole]
           .sort((a, b) => tierRank(a.tier) - tierRank(b.tier))
           .forEach((entry) => {
@@ -1329,15 +1339,16 @@ function renderOverviewTab() {
 
             wrap.appendChild(iconWrap);
           });
-        cell.appendChild(wrap);
-      }
-      row.appendChild(cell);
-    });
 
-    tbody.appendChild(row);
+        roleRow.appendChild(wrap);
+        card.appendChild(roleRow);
+      });
+    }
+
+    grid.appendChild(card);
   });
-  table.appendChild(tbody);
-  els.coverageTable.appendChild(table);
+
+  els.coverageTable.appendChild(grid);
 }
 
 /* ---------- Rendering: Calendar tab ---------- */

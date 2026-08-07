@@ -510,30 +510,55 @@ h3 {
   overflow-x: auto;
 }
 
-.coverage-table table {
-  border-collapse: collapse;
-  width: 100%;
-  min-width: 700px;
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+  align-items: start;
 }
 
-.coverage-table th, .coverage-table td {
+.overview-card {
+  background: var(--bg-panel);
   border: 1px solid var(--border);
-  padding: 10px;
-  vertical-align: top;
-  text-align: left;
+  border-radius: var(--radius);
+  padding: 16px;
 }
 
-.coverage-table th {
-  background: var(--bg-panel-2);
-  color: var(--gold);
-  font-size: 0.8rem;
-  text-transform: uppercase;
-}
-
-.coverage-table td.person-cell {
+.overview-card-header {
   color: var(--gold-bright);
   font-weight: 600;
-  white-space: nowrap;
+  font-size: 1.05rem;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.overview-card-empty {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.overview-role-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.overview-role-row + .overview-role-row {
+  border-top: 1px solid var(--border);
+}
+
+.overview-role-label {
+  min-width: 62px;
+  padding-top: 6px;
+  font-size: 0.75rem;
+  color: var(--gold);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  flex-shrink: 0;
 }
 
 .coverage-table .role-champs {
@@ -564,11 +589,6 @@ h3 {
   padding: 0 2px;
   font-size: 0.55rem;
   line-height: 14px;
-}
-
-.coverage-table .no-champs {
-  color: var(--text-dim);
-  font-size: 0.75rem;
 }
 
 .add-event-form {
@@ -1785,6 +1805,10 @@ h3 {
 
   .comp-champ-picker input[type="text"] {
     max-width: none;
+  }
+
+  .overview-grid {
+    grid-template-columns: 1fr;
   }
 }
 
