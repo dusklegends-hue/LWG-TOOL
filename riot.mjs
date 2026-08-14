@@ -78,6 +78,20 @@ export function requestBudget() {
   };
 }
 
+// A browser tab keeps one budget for its lifetime, but a CLI process starts blind — and two
+// runs a minute apart share the same real limit. These let a caller persist the window so the
+// guard is honest across processes.
+export function exportRecentRequests() {
+  requestBudget();
+  return [...sent];
+}
+
+export function importRecentRequests(timestamps) {
+  const cutoff = Date.now() - RATE_WINDOW_MS;
+  (timestamps || []).filter((t) => t > cutoff).forEach((t) => sent.push(t));
+  sent.sort((a, b) => a - b);
+}
+
 export class RateLimitError extends Error {
   constructor(message) {
     super(message);

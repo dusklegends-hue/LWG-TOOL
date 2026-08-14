@@ -31,7 +31,9 @@ import {
   RATE_LIMIT_PER_WINDOW,
   configureMatchCache,
   estimateLobbyCost,
+  exportRecentRequests,
   formatScoutedPlayer,
+  importRecentRequests,
   formatScoutedPlayerMatches,
   parseOpggMultiSearch,
   requestBudget,
@@ -45,6 +47,24 @@ const CACHE_FILE = new URL("./.match-cache.json", import.meta.url);
 configureMatchCache({
   load: () => (existsSync(CACHE_FILE) ? JSON.parse(readCache(CACHE_FILE, "utf8")) : {}),
   save: (entries) => writeFileSync(CACHE_FILE, JSON.stringify(entries), "utf8"),
+});
+
+// Riot's limit does not reset because a process did. Two `scout` runs a minute apart share one
+// budget, so the window is carried between them on disk.
+const BUDGET_FILE = new URL("./.riot-budget.json", import.meta.url);
+if (existsSync(BUDGET_FILE)) {
+  try {
+    importRecentRequests(JSON.parse(readCache(BUDGET_FILE, "utf8")));
+  } catch {
+    // A corrupt budget file only costs us the guard's memory of the last two minutes.
+  }
+}
+process.on("exit", () => {
+  try {
+    writeFileSync(BUDGET_FILE, JSON.stringify(exportRecentRequests()), "utf8");
+  } catch {
+    // Nothing useful to do at exit.
+  }
 });
 
 const BASE = "https://firestore.googleapis.com/v1/projects/champ-pool-lwg/databases/(default)/documents";
