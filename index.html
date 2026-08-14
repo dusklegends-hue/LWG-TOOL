@@ -247,6 +247,7 @@
           />
           <div class="ask-strategy-row">
             <select id="newStrategyCategory"></select>
+            <select id="newStrategySampleSize" title="Ranked games to poll per player"></select>
             <input id="newStrategyAuthor" type="text" placeholder="Your name (optional)" autocomplete="off" />
             <button type="submit">Ask Claude</button>
           </div>
@@ -254,8 +255,9 @@
 
         <p class="matches-status">
           Questions wait here until Claude answers them — answers appear live, no reload needed. Paste an op.gg
-          multi-search link and the lobby gets scouted through Riot first, so the answer is written against real ranks
-          and champion pools.
+          multi-search link and the lobby gets polled through Riot first — ranked solo and flex only, with per-champion
+          win rates — so the answer is written against real games. Riot allows 100 requests every 2 minutes, and a full
+          lobby needs more than that, so you'll be asked before anything that would break the limit.
         </p>
         <div id="strategyStatus" class="matches-status"></div>
 

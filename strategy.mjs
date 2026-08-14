@@ -26,7 +26,26 @@ that is shown as plain text, so keep to those.
 */
 
 import { readFileSync } from "node:fs";
-import { formatScoutedPlayer, formatScoutedPlayerMatches, scoutLobby } from "./riot.mjs";
+import {
+  RANKED_SAMPLE_TARGET,
+  RATE_LIMIT_PER_WINDOW,
+  configureMatchCache,
+  estimateLobbyCost,
+  formatScoutedPlayer,
+  formatScoutedPlayerMatches,
+  parseOpggMultiSearch,
+  requestBudget,
+  scoutLobby,
+} from "./riot.mjs";
+import { existsSync, readFileSync as readCache, writeFileSync } from "node:fs";
+
+// Same idea as the browser's localStorage cache: match summaries are immutable, so a re-scout
+// only pays for games played since. Kept beside the script and out of git.
+const CACHE_FILE = new URL("./.match-cache.json", import.meta.url);
+configureMatchCache({
+  load: () => (existsSync(CACHE_FILE) ? JSON.parse(readCache(CACHE_FILE, "utf8")) : {}),
+  save: (entries) => writeFileSync(CACHE_FILE, JSON.stringify(entries), "utf8"),
+});
 
 const BASE = "https://firestore.googleapis.com/v1/projects/champ-pool-lwg/databases/(default)/documents";
 // Strategy entries share the "notes" collection under type "strategy" — the Firestore rules
@@ -185,12 +204,38 @@ async function cmdAnswer(args) {
   console.log(`Answered ${id} — it is live in the Strategy tab now.`);
 }
 
+// The CLI's version of the tab's popup: it cannot open a dialog, so it refuses and explains,
+// and --yes is the deliberate act of saying "spend it anyway".
+function guardRiotSpend(playerCount, target, args) {
+  const cost = estimateLobbyCost(playerCount, { target });
+  const budget = requestBudget();
+  if (cost.worst <= budget.remaining || args.includes("--yes")) return;
+
+  throw new Error(
+    `This would poll ${playerCount} players × ${target} ranked games — about ${cost.best}-${cost.worst} Riot ` +
+      `requests, against a limit of ${RATE_LIMIT_PER_WINDOW} every 2 minutes (${budget.remaining} left right now).\n` +
+      `It will be cut off partway. Polled games are cached, so a retry resumes cheaply.\n` +
+      `Re-run with --yes to do it anyway, or --games 10 for a smaller sample.`
+  );
+}
+
 async function cmdScout(args) {
   const url = args.find((a) => !a.startsWith("--"));
-  if (!url) throw new Error("Usage: strategy.mjs scout <opgg-multisearch-url> [--id <strategyId>]");
+  if (!url) throw new Error("Usage: strategy.mjs scout <opgg-multisearch-url> [--games N] [--yes] [--id <strategyId>]");
 
-  const scout = await scoutLobby(url, await loadRoster());
-  console.log(`Lobby scout — last ${scout.matchesPerPlayer} games each${scout.region ? `, ${scout.region}` : ""}:`);
+  const gamesIndex = args.indexOf("--games");
+  const target = gamesIndex === -1 ? RANKED_SAMPLE_TARGET : Number(args[gamesIndex + 1]) || RANKED_SAMPLE_TARGET;
+  const { players } = parseOpggMultiSearch(url);
+  guardRiotSpend(players.length, target, args);
+
+  const scout = await scoutLobby(url, await loadRoster(), {
+    target,
+    onProgress: ({ index, total, riotId, stage, found }) => {
+      if (stage === "start") process.stderr.write(`  [${index + 1}/${total}] ${riotId}…\n`);
+      else if (stage === "scanning") process.stderr.write(`      ${found} ranked games so far\r`);
+    },
+  });
+  console.log(`Lobby poll — up to ${scout.sampleTarget} ranked games each (solo + flex)${scout.region ? `, ${scout.region}` : ""}:`);
   scout.players.forEach((p) => {
     console.log(`  ${formatScoutedPlayer(p)}`);
     formatScoutedPlayerMatches(p).forEach((m) => console.log(`      ${m}`));
@@ -257,7 +302,7 @@ if (!commands[command]) {
       "  node strategy.mjs list [--all]",
       "  node strategy.mjs get <id>",
       "  node strategy.mjs answer <id> <file.md>",
-      "  node strategy.mjs scout <opgg-url> [--id <strategyId>]",
+      "  node strategy.mjs scout <opgg-url> [--games N] [--yes] [--id <strategyId>]",
       '  node strategy.mjs ask "question" [--category X] [--opgg URL] [--by name] [--answer file.md]',
     ].join("\n")
   );

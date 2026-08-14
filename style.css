@@ -1892,29 +1892,67 @@ h3 {
   margin-bottom: 5px;
 }
 
+.scout-player-sample {
+  color: var(--text);
+  font-size: 0.76rem;
+  margin-bottom: 6px;
+}
+
 .scout-player-champs {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: 3px;
   color: var(--text-dim);
   font-size: 0.75rem;
 }
 
 .scout-champ {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 7px;
   background: var(--bg-panel-2);
   border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 9px 2px 2px;
+  border-radius: var(--radius);
+  padding: 3px 9px 3px 3px;
   color: var(--text);
 }
 
 .scout-champ img {
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.scout-champ-name {
+  min-width: 84px;
+  font-weight: 600;
+}
+
+.scout-champ-wr {
+  min-width: 38px;
+  text-align: right;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.scout-champ-wr.high {
+  color: #4ade80;
+}
+
+.scout-champ-wr.low {
+  color: var(--danger);
+}
+
+/* Too small a sample to colour — showing it as a signal would be lying about it. */
+.scout-champ-wr.thin {
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.scout-champ-detail {
+  color: var(--text-dim);
+  font-size: 0.72rem;
 }
 
 .strategy-answer {

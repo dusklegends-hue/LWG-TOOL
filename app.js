@@ -9,12 +9,17 @@ import {
   onSnapshot,
 } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
 import {
-  RIOT_PROXY_BASE,
+  RANKED_SAMPLE_TARGET,
+  RATE_LIMIT_PER_WINDOW,
   ROLE_DISPLAY_NAMES,
   aggregateStats,
+  configureMatchCache,
+  estimateLobbyCost,
   formatScoutedPlayer,
   parseOpggMultiSearch,
+  requestBudget,
   riotErrorMessage,
+  riotFetch,
   scoutLobby,
   splitRiotId,
   titleCase,
@@ -70,6 +75,11 @@ const UI_STORAGE_KEY = "championPoolManager.ui.v1";
 const DDRAGON_BASE = "https://ddragon.leagueoflegends.com";
 const STATS_MATCH_COUNT = 20;
 const STRATEGY_CATEGORIES = ["General", "Team Comp", "Bans", "Draft", "Matchup", "Scouting"];
+const SAMPLE_SIZES = [10, 20, 30];
+const MATCH_CACHE_KEY = "championPoolManager.matchSummaries.v1";
+// Roughly 3000 summaries is a few hundred KB — well inside localStorage's 5MB, and enough to
+// hold every game a regular lobby has played for months.
+const MATCH_CACHE_LIMIT = 3000;
 // Standard tournament draft order: 6 bans, 6 picks, 4 more bans, 4 more picks.
 const DRAFT_SEQUENCE = [
   { side: "blue", type: "ban" },
@@ -219,6 +229,7 @@ if (firebaseConfig.apiKey === "REPLACE_ME") {
 async function init() {
   cacheEls();
   loadLocalUIState();
+  configureMatchCache(localStorageMatchCache());
   bindStaticEvents();
 
   let championDataError = null;
@@ -454,6 +465,7 @@ function cacheEls() {
   els.newStrategyQuestion = document.getElementById("newStrategyQuestion");
   els.newStrategyOpgg = document.getElementById("newStrategyOpgg");
   els.newStrategyCategory = document.getElementById("newStrategyCategory");
+  els.newStrategySampleSize = document.getElementById("newStrategySampleSize");
   els.newStrategyAuthor = document.getElementById("newStrategyAuthor");
   els.strategyStatus = document.getElementById("strategyStatus");
   els.strategyList = document.getElementById("strategyList");
@@ -584,6 +596,14 @@ function bindStaticEvents() {
     els.newStrategyCategory.appendChild(opt);
   });
 
+  SAMPLE_SIZES.forEach((size) => {
+    const opt = document.createElement("option");
+    opt.value = String(size);
+    opt.textContent = `${size} ranked games`;
+    els.newStrategySampleSize.appendChild(opt);
+  });
+  els.newStrategySampleSize.value = String(RANKED_SAMPLE_TARGET);
+
   els.askStrategyForm.addEventListener("submit", (e) => {
     e.preventDefault();
     const question = els.newStrategyQuestion.value.trim();
@@ -591,7 +611,7 @@ function bindStaticEvents() {
     const opggUrl = els.newStrategyOpgg.value.trim();
     const category = els.newStrategyCategory.value;
     const author = els.newStrategyAuthor.value.trim();
-    askStrategy(question, category, opggUrl, author);
+    askStrategy(question, category, opggUrl, author, Number(els.newStrategySampleSize.value));
     els.newStrategyQuestion.value = "";
     els.newStrategyOpgg.value = "";
   });
@@ -737,6 +757,32 @@ function loadLocalUIState() {
 
 function saveLocalUIState() {
   localStorage.setItem(UI_STORAGE_KEY, JSON.stringify({ selectedPersonId: state.selectedPersonId }));
+}
+
+// Match summaries are cached per browser rather than in Firestore: they are derived data
+// anyone can re-fetch, and keeping them local means a scout costs Riot requests only for
+// games that are actually new. Riot's rate limit, not storage, is the scarce resource.
+function localStorageMatchCache() {
+  return {
+    load() {
+      const raw = localStorage.getItem(MATCH_CACHE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    },
+    save(entries) {
+      const keys = Object.keys(entries);
+      const trimmed =
+        keys.length > MATCH_CACHE_LIMIT
+          ? Object.fromEntries(keys.slice(keys.length - MATCH_CACHE_LIMIT).map((k) => [k, entries[k]]))
+          : entries;
+      try {
+        localStorage.setItem(MATCH_CACHE_KEY, JSON.stringify(trimmed));
+      } catch (err) {
+        // A full quota is not worth failing a scout over — drop the cache and carry on.
+        console.warn("Match cache could not be saved; clearing it.", err);
+        localStorage.removeItem(MATCH_CACHE_KEY);
+      }
+    },
+  };
 }
 
 /* ---------- Data Dragon ---------- */
@@ -979,10 +1025,45 @@ async function deleteNote(id) {
 
 /* ---------- Strategy (questions for Claude + op.gg lobby scouting) ---------- */
 
-async function askStrategy(question, category, opggUrl, author) {
+// Nothing that would overrun Riot's limit happens without being asked first. The numbers are
+// spelled out rather than summarised, because "this might be slow" is not a decision anyone
+// can make — "310 requests against a budget of 100 every 2 minutes" is.
+function confirmRiotSpend(playerCount, sampleSize) {
+  const cost = estimateLobbyCost(playerCount, { target: sampleSize });
+  const budget = requestBudget();
+  if (cost.worst <= budget.remaining) return true;
+
+  const windows = Math.ceil(cost.worst / RATE_LIMIT_PER_WINDOW);
+  return confirm(
+    `Polling ${playerCount} players × ${sampleSize} ranked games needs about ` +
+      `${cost.best}–${cost.worst} Riot requests.\n\n` +
+      `The key allows ${RATE_LIMIT_PER_WINDOW} every 2 minutes and ${budget.remaining} are left in this window` +
+      `${budget.used ? ` (${budget.used} already used, clears in ${budget.resetInSeconds}s)` : ""}.\n\n` +
+      `This will hit the limit and stop partway — roughly ${windows} rounds of 2 minutes to finish it all. ` +
+      `Games already polled are cached, so anything it gets through is not lost and a retry resumes cheaply.\n\n` +
+      `Continue anyway?`
+  );
+}
+
+async function askStrategy(question, category, opggUrl, author, sampleSize = RANKED_SAMPLE_TARGET) {
   const id = crypto.randomUUID();
   const parsed = parseOpggMultiSearch(opggUrl);
 
+  if (parsed.players.length > 0 && !confirmRiotSpend(parsed.players.length, sampleSize)) {
+    setStrategyStatus("Question saved without polling the lobby — use Scout lobby on the card when you're ready.", false);
+    await saveStrategyQuestion(id, question, category, opggUrl, author, sampleSize);
+    return;
+  }
+
+  const saved = await saveStrategyQuestion(id, question, category, opggUrl, author, sampleSize);
+  if (!saved) return;
+
+  if (parsed.players.length > 0) {
+    scoutStrategy({ id, opggUrl, sampleSize });
+  }
+}
+
+async function saveStrategyQuestion(id, question, category, opggUrl, author, sampleSize) {
   try {
     await setDoc(strategyDoc(id), {
       type: "strategy",
@@ -993,20 +1074,18 @@ async function askStrategy(question, category, opggUrl, author) {
       status: "pending",
       answer: null,
       answeredAt: null,
+      sampleSize: sampleSize || RANKED_SAMPLE_TARGET,
       // A concrete client Date (not serverTimestamp()) so a new question sorts to the top
       // immediately instead of sitting as a null placeholder until the server confirms.
       createdAt: new Date(),
       scoutJson: null,
       scoutError: null,
     });
+    return true;
   } catch (err) {
     console.error(err);
     setStrategyStatus("Could not save that question — check your connection and try again.", true);
-    return;
-  }
-
-  if (parsed.players.length > 0) {
-    scoutStrategy({ id, opggUrl });
+    return false;
   }
 }
 
@@ -1029,18 +1108,53 @@ function setStrategyStatus(text, isError) {
 // against real data instead of guesses. The result is stored as a JSON string rather than a
 // nested Firestore map — it is only ever read back whole, and one string keeps the shape free
 // to change without a migration.
-async function scoutStrategy(entry) {
+async function scoutStrategy(entry, { alreadyConfirmed = false } = {}) {
   const parsed = parseOpggMultiSearch(entry.opggUrl);
   if (parsed.players.length === 0) {
     setStrategyStatus("No players found in that op.gg link.", true);
     return;
   }
 
+  const sampleSize = entry.sampleSize || RANKED_SAMPLE_TARGET;
+  if (!alreadyConfirmed && !confirmRiotSpend(parsed.players.length, sampleSize)) {
+    setStrategyStatus("Left alone — nothing was requested from Riot.", false);
+    return;
+  }
+
   scoutingId = entry.id;
-  setStrategyStatus(`Scouting ${parsed.players.length} player${parsed.players.length === 1 ? "" : "s"} through Riot…`, false);
+  setStrategyStatus(
+    `Polling ${parsed.players.length} player${parsed.players.length === 1 ? "" : "s"} — up to ` +
+      `${sampleSize} ranked games each.`,
+    false
+  );
 
   try {
-    const scout = await scoutLobby(entry.opggUrl, state.people);
+    const scout = await scoutLobby(entry.opggUrl, state.people, {
+      target: sampleSize,
+      onProgress: ({ index, total, riotId, stage, found }) => {
+        const position = `Player ${index + 1} of ${total}`;
+        setStrategyStatus(
+          stage === "scanning"
+            ? `${position} — ${riotId}: ${found} ranked games found…`
+            : `${position} — ${riotId}${stage === "done" ? " done" : "…"}`,
+          false
+        );
+      },
+      // Written back after each player, so a rate limit or a closed tab near the end still
+      // leaves the players already polled on the card.
+      onPlayer: async (_player, done) => {
+        const partial = {
+          region: parsed.region,
+          sampleTarget: sampleSize,
+          partial: true,
+          fetchedAt: new Date().toISOString(),
+          players: done,
+        };
+        await updateDoc(strategyDoc(entry.id), { scoutJson: JSON.stringify(partial) }).catch((err) =>
+          console.warn("Could not save partial scout progress", err)
+        );
+      },
+    });
     await updateDoc(strategyDoc(entry.id), { scoutJson: JSON.stringify(scout), scoutError: null });
 
     const failed = scout.players.filter((p) => p.error).length;
@@ -1052,7 +1166,11 @@ async function scoutStrategy(entry) {
     );
   } catch (err) {
     console.error(err);
-    const message = err.message || "Something went wrong scouting that lobby.";
+    const done = (err.players || []).length;
+    const message = err.rateLimited
+      ? `${err.message} ${done} of ${parsed.players.length} players were polled and saved — ` +
+        `press Scout lobby again in about ${requestBudget().resetInSeconds}s and it picks up from the cache.`
+      : err.message || "Something went wrong scouting that lobby.";
     try {
       await updateDoc(strategyDoc(entry.id), { scoutError: message });
     } catch (writeErr) {
@@ -1967,35 +2085,32 @@ async function loadMatchData(person) {
       const [gameName, tagLine] = splitRiotId(person.riotId);
       if (!gameName || !tagLine) throw new Error("Riot ID should look like Name#Tag");
 
-      const accountRes = await fetch(
-        `${RIOT_PROXY_BASE}/account?gameName=${encodeURIComponent(gameName)}&tagLine=${encodeURIComponent(tagLine)}`
+      const account = await riotFetch(
+        `/account?gameName=${encodeURIComponent(gameName)}&tagLine=${encodeURIComponent(tagLine)}`
       );
-      const accountData = await accountRes.json();
-      if (!accountRes.ok) {
-        throw new Error(riotErrorMessage(accountData, "Could not find that Riot ID"));
+      if (!account.ok) {
+        throw new Error(riotErrorMessage(account.data, "Could not find that Riot ID"));
       }
-      puuid = accountData.puuid;
+      puuid = account.data.puuid;
       // Cache the resolved puuid on the shared player doc so future loads (by anyone) skip this lookup.
       await updateDoc(personDoc(person.id), { puuid });
     }
 
     const [rankedRes, liveRes, matchIdsRes] = await Promise.all([
-      fetch(`${RIOT_PROXY_BASE}/ranked?puuid=${puuid}`),
-      fetch(`${RIOT_PROXY_BASE}/live?puuid=${puuid}`),
-      fetch(`${RIOT_PROXY_BASE}/matches?puuid=${puuid}&count=5`),
+      riotFetch(`/ranked?puuid=${puuid}`),
+      riotFetch(`/live?puuid=${puuid}`),
+      riotFetch(`/matches?puuid=${puuid}&count=5`),
     ]);
-    const ranked = await rankedRes.json();
-    const live = await liveRes.json();
-    const matchIds = await matchIdsRes.json();
+    const ranked = rankedRes.data;
+    const live = liveRes.data;
+    const matchIds = matchIdsRes.data;
 
     if (!rankedRes.ok) throw new Error(riotErrorMessage(ranked, "Could not load ranked stats"));
     if (!liveRes.ok) throw new Error(riotErrorMessage(live, "Could not load live game status"));
     if (!matchIdsRes.ok) throw new Error(riotErrorMessage(matchIds, "Could not load match history"));
 
     const matches = await Promise.all(
-      (Array.isArray(matchIds) ? matchIds : []).map((id) =>
-        fetch(`${RIOT_PROXY_BASE}/match/${id}`).then((r) => r.json())
-      )
+      (Array.isArray(matchIds) ? matchIds : []).map((id) => riotFetch(`/match/${id}`).then((r) => r.data))
     );
 
     matchesCache[person.id] = { ranked, live, matches, puuid };
@@ -2208,21 +2323,20 @@ async function loadStatsData(person) {
       const [gameName, tagLine] = splitRiotId(person.riotId);
       if (!gameName || !tagLine) throw new Error("Riot ID should look like Name#Tag");
 
-      const accountRes = await fetch(
-        `${RIOT_PROXY_BASE}/account?gameName=${encodeURIComponent(gameName)}&tagLine=${encodeURIComponent(tagLine)}`
+      const account = await riotFetch(
+        `/account?gameName=${encodeURIComponent(gameName)}&tagLine=${encodeURIComponent(tagLine)}`
       );
-      const accountData = await accountRes.json();
-      if (!accountRes.ok) throw new Error(riotErrorMessage(accountData, "Could not find that Riot ID"));
-      puuid = accountData.puuid;
+      if (!account.ok) throw new Error(riotErrorMessage(account.data, "Could not find that Riot ID"));
+      puuid = account.data.puuid;
       await updateDoc(personDoc(person.id), { puuid });
     }
 
-    const matchIdsRes = await fetch(`${RIOT_PROXY_BASE}/matches?puuid=${puuid}&count=${STATS_MATCH_COUNT}`);
-    const matchIds = await matchIdsRes.json();
+    const matchIdsRes = await riotFetch(`/matches?puuid=${puuid}&count=${STATS_MATCH_COUNT}`);
+    const matchIds = matchIdsRes.data;
     if (!matchIdsRes.ok) throw new Error(riotErrorMessage(matchIds, "Could not load match history"));
 
     const matches = await Promise.all(
-      (Array.isArray(matchIds) ? matchIds : []).map((id) => fetch(`${RIOT_PROXY_BASE}/match/${id}`).then((r) => r.json()))
+      (Array.isArray(matchIds) ? matchIds : []).map((id) => riotFetch(`/match/${id}`).then((r) => r.data))
     );
 
     statsCache[person.id] = aggregateStats(matches, puuid);
@@ -2787,7 +2901,10 @@ function buildScoutBlock(scout) {
   const heading = document.createElement("div");
   heading.className = "strategy-scout-heading";
   const when = scout.fetchedAt ? formatRelativeTime(new Date(scout.fetchedAt).getTime()) : "";
-  heading.textContent = `Lobby scout — last ${scout.matchesPerPlayer} games each${when ? ` · ${when}` : ""}`;
+  const depth = scout.sampleTarget || scout.matchesPerPlayer || RANKED_SAMPLE_TARGET;
+  heading.textContent =
+    `Lobby poll — up to ${depth} ranked games each (solo + flex)${when ? ` · ${when}` : ""}` +
+    (scout.partial ? " · still running" : "");
   wrap.appendChild(heading);
 
   (scout.players || []).forEach((p) => {
@@ -2816,31 +2933,23 @@ function buildScoutBlock(scout) {
     rank.textContent = soloText + flexText + roleText;
     row.appendChild(rank);
 
+    const r = p.recent || {};
+    if (r.games) {
+      const sample = document.createElement("div");
+      sample.className = "scout-player-sample";
+      sample.textContent =
+        `Last ${r.games} ranked: ${r.wins}W/${r.losses}L (${r.winRate}%) · ` +
+        `solo ${r.soloGames}g ${r.soloWinRate}% · flex ${r.flexGames}g ${r.flexWinRate}%` +
+        (r.scanned > r.games ? ` · found in their last ${r.scanned} games` : "");
+      row.appendChild(sample);
+    }
+
     const champs = document.createElement("div");
     champs.className = "scout-player-champs";
-    if (!(p.recent?.champions || []).length) {
-      champs.textContent = "No recent games found.";
+    if (!(r.champions || []).length) {
+      champs.textContent = "No ranked games found in the window.";
     } else {
-      p.recent.champions.forEach((c) => {
-        const chip = document.createElement("span");
-        chip.className = "scout-champ";
-
-        const champ = findChampionByName(c.name);
-        if (champ) {
-          const img = document.createElement("img");
-          img.src = champ.image;
-          img.alt = champ.name;
-          chip.appendChild(img);
-        }
-
-        const label = document.createElement("span");
-        const winRate = c.games > 0 ? Math.round((c.wins / c.games) * 100) : 0;
-        const damage = c.dpm ? ` ${c.dpm} DPM ${c.damageShare}%` : "";
-        label.textContent = `${champ ? champ.name : c.name} ${c.games}g ${winRate}% ${c.kda.toFixed(1)} KDA${damage}`;
-        chip.appendChild(label);
-
-        champs.appendChild(chip);
-      });
+      r.champions.slice(0, 6).forEach((c) => champs.appendChild(buildScoutChampionRow(c)));
     }
     row.appendChild(champs);
 
@@ -2848,6 +2957,45 @@ function buildScoutBlock(scout) {
   });
 
   return wrap;
+}
+
+// One champion's line in a scouted player's pool. Win rate leads and is coloured, because it
+// is the number the draft turns on; the sample size sits next to it so a 100% on two games
+// can't be mistaken for a real one.
+function buildScoutChampionRow(c) {
+  const row = document.createElement("div");
+  row.className = "scout-champ";
+
+  const champ = findChampionByName(c.name);
+  if (champ) {
+    const img = document.createElement("img");
+    img.src = champ.image;
+    img.alt = champ.name;
+    row.appendChild(img);
+  }
+
+  const name = document.createElement("span");
+  name.className = "scout-champ-name";
+  name.textContent = champ ? champ.name : c.name;
+  row.appendChild(name);
+
+  const rate = document.createElement("span");
+  rate.className = "scout-champ-wr " + (c.games < 3 ? "thin" : c.winRate >= 60 ? "high" : c.winRate < 45 ? "low" : "");
+  rate.textContent = `${c.winRate}%`;
+  rate.title = c.games < 3 ? "Too few games to read much into" : "";
+  row.appendChild(rate);
+
+  const record = document.createElement("span");
+  record.className = "scout-champ-detail";
+  const split = [];
+  if (c.solo.games) split.push(`solo ${c.solo.wins}/${c.solo.games}`);
+  if (c.flex.games) split.push(`flex ${c.flex.wins}/${c.flex.games}`);
+  record.textContent =
+    `${c.wins}W-${c.games - c.wins}L${split.length ? ` (${split.join(", ")})` : ""} · ` +
+    `${c.kda.toFixed(1)} KDA · ${c.dpm} DPM · ${c.damageShare}% dmg`;
+  row.appendChild(record);
+
+  return row;
 }
 
 // A deliberately small Markdown subset — enough for the shape an answer actually takes
