@@ -43,6 +43,15 @@ function noteDoc(id) {
   return doc(notesCol, id);
 }
 
+// Strategy questions live in the "notes" collection under type "strategy" rather than a
+// collection of their own. The security rules name every collection explicitly, so a new one
+// is denied until someone edits them in the Firebase console — and "notes" is already the
+// typed store for team-written text. Moving to a real "strategies" collection later is this
+// function plus the filter in handleNotesSnapshot.
+function strategyDoc(id) {
+  return doc(notesCol, id);
+}
+
 const ROLES = ["Top", "Jungle", "Mid", "ADC", "Support", "Fill"];
 const COMP_ROLES = ["Top", "Jungle", "Mid", "ADC", "Support"];
 const TIERS = ["S", "A", "B", "C"];
@@ -50,6 +59,10 @@ const UI_STORAGE_KEY = "championPoolManager.ui.v1";
 const DDRAGON_BASE = "https://ddragon.leagueoflegends.com";
 const RIOT_PROXY_BASE = "https://lwg-riot-proxy.dusklegends-lwg.workers.dev";
 const STATS_MATCH_COUNT = 20;
+// Scouting fans out over up to 10 players at once, so it pulls far fewer matches each than
+// the Stats tab does — a whole lobby at STATS_MATCH_COUNT would blow the Riot rate limit.
+const SCOUT_MATCH_COUNT = 8;
+const STRATEGY_CATEGORIES = ["General", "Team Comp", "Bans", "Draft", "Matchup", "Scouting"];
 const ROLE_DISPLAY_NAMES = {
   TOP: "Top",
   JUNGLE: "Jungle",
@@ -190,6 +203,11 @@ let customGames = []; // populated live from Firestore's "customGames" collectio
 let notes = []; // populated live from Firestore's "notes" collection — shared across everyone
 let draftState = { blueTeamName: "Blue Team", redTeamName: "Red Team", actions: [] }; // shared live draft
 let draftChampionSearch = ""; // search text for the draft champion picker
+
+let strategies = []; // populated live from Firestore's "strategies" collection — shared across everyone
+let scoutingId = null; // strategy id whose op.gg lobby is being fetched from Riot right now, or null
+let strategyStatusText = ""; // last ask/scout message shown above the list ("" = nothing to say)
+let strategyStatusIsError = false;
 
 const els = {};
 
@@ -346,6 +364,7 @@ async function init() {
   renderCustomsTab();
   renderNotesTab();
   renderDraftTab();
+  renderStrategyTab();
 
   document.getElementById("loadingScreen").classList.add("hidden");
   els.app.classList.remove("hidden");
@@ -433,6 +452,13 @@ function cacheEls() {
   els.redBans = document.getElementById("redBans");
   els.bluePicks = document.getElementById("bluePicks");
   els.redPicks = document.getElementById("redPicks");
+  els.askStrategyForm = document.getElementById("askStrategyForm");
+  els.newStrategyQuestion = document.getElementById("newStrategyQuestion");
+  els.newStrategyOpgg = document.getElementById("newStrategyOpgg");
+  els.newStrategyCategory = document.getElementById("newStrategyCategory");
+  els.newStrategyAuthor = document.getElementById("newStrategyAuthor");
+  els.strategyStatus = document.getElementById("strategyStatus");
+  els.strategyList = document.getElementById("strategyList");
 }
 
 function bindStaticEvents() {
@@ -552,6 +578,25 @@ function bindStaticEvents() {
     draftChampionSearch = els.draftChampionSearch.value;
     renderDraftChampionGrid();
   });
+
+  STRATEGY_CATEGORIES.forEach((category) => {
+    const opt = document.createElement("option");
+    opt.value = category;
+    opt.textContent = category;
+    els.newStrategyCategory.appendChild(opt);
+  });
+
+  els.askStrategyForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const question = els.newStrategyQuestion.value.trim();
+    if (!question) return;
+    const opggUrl = els.newStrategyOpgg.value.trim();
+    const category = els.newStrategyCategory.value;
+    const author = els.newStrategyAuthor.value.trim();
+    askStrategy(question, category, opggUrl, author);
+    els.newStrategyQuestion.value = "";
+    els.newStrategyOpgg.value = "";
+  });
 }
 
 function renderFilterChips(container, options, activeSet) {
@@ -582,6 +627,7 @@ function switchTab(tab) {
   document.getElementById("customsTab").classList.toggle("active", tab === "customs");
   document.getElementById("notesTab").classList.toggle("active", tab === "notes");
   document.getElementById("draftTab").classList.toggle("active", tab === "draft");
+  document.getElementById("strategyTab").classList.toggle("active", tab === "strategy");
   if (tab === "overview") renderOverviewTab();
   if (tab === "calendar") renderCalendarTab();
   if (tab === "comps") renderCompsTab();
@@ -590,6 +636,7 @@ function switchTab(tab) {
   if (tab === "customs") renderCustomsTab();
   if (tab === "notes") renderNotesTab();
   if (tab === "draft") renderDraftTab();
+  if (tab === "strategy") renderStrategyTab();
 }
 
 /* ---------- Shared roster (Firestore) ---------- */
@@ -642,7 +689,7 @@ function handleCustomGamesSnapshot(snapshot) {
 }
 
 function handleNotesSnapshot(snapshot) {
-  notes = snapshot.docs
+  const all = snapshot.docs
     .map((d) => ({ id: d.id, ...d.data() }))
     .sort((a, b) => {
       const aTime = a.createdAt?.seconds ?? 0;
@@ -650,7 +697,13 @@ function handleNotesSnapshot(snapshot) {
       return bTime - aTime;
     });
 
+  // One collection, two features: the Notes tab reads "player"/"draft" and the Strategy tab
+  // reads "strategy". Splitting here keeps every renderer downstream unaware of the sharing.
+  notes = all.filter((n) => n.type !== "strategy");
+  strategies = all.filter((n) => n.type === "strategy");
+
   renderNotesTab();
+  renderStrategyTab();
 }
 
 function handleDraftStateSnapshot(snapshot) {
@@ -722,7 +775,14 @@ function findChampionByName(championName) {
   if (!championName) return null;
   if (championsById[championName]) return championsById[championName];
   const lower = championName.toLowerCase();
-  return championList.find((c) => c.id.toLowerCase() === lower) || null;
+  return (
+    championList.find((c) => c.id.toLowerCase() === lower) ||
+    // Riot's match data uses the id form ("MonkeyKing", "Kaisa"), but a human writing a
+    // strategy uses the display name ("Wukong", "Kai'Sa") — both should resolve.
+    championList.find((c) => c.name.toLowerCase() === lower) ||
+    championList.find((c) => c.name.toLowerCase().replace(/[^a-z]/g, "") === lower.replace(/[^a-z]/g, "")) ||
+    null
+  );
 }
 
 function findChampionByKey(championKey) {
@@ -917,6 +977,271 @@ async function deleteNote(id) {
     console.error(err);
     alert("Could not delete that note — check your connection and try again.");
   }
+}
+
+/* ---------- Strategy (questions for Claude + op.gg lobby scouting) ---------- */
+
+// op.gg multi-search links come in several shapes and people also just paste a list of
+// Riot IDs, so this accepts all of them and returns whatever it can make sense of:
+//   https://op.gg/lol/multisearch/na?summoners=Name%23TAG,Other%23TAG
+//   https://www.op.gg/multisearch/euw?summoners=...
+//   https://na.op.gg/multi/query=name1%2Cname2      (legacy — no tags in it)
+//   Name#TAG, Other#TAG                             (raw paste)
+function parseOpggMultiSearch(raw) {
+  const text = (raw || "").trim();
+  if (!text) return { region: null, players: [] };
+
+  let region = null;
+  let list = text;
+
+  if (/op\.gg/i.test(text)) {
+    try {
+      const url = new URL(text.startsWith("http") ? text : `https://${text}`);
+
+      const hostParts = url.hostname.split(".");
+      if (hostParts.length > 2 && hostParts[0] !== "www") region = hostParts[0];
+
+      const segments = url.pathname.split("/").filter(Boolean);
+      const multiIndex = segments.findIndex((s) => s === "multisearch" || s === "multi");
+      if (multiIndex !== -1 && segments[multiIndex + 1] && !segments[multiIndex + 1].includes("query=")) {
+        region = segments[multiIndex + 1];
+      }
+
+      // The legacy form hides the names in the path ("/multi/query=a%2Cb") rather than a real query string.
+      const pathQuery = url.pathname.match(/query=(.*)$/);
+      list = url.searchParams.get("summoners") || url.searchParams.get("query") || (pathQuery ? pathQuery[1] : "");
+    } catch (err) {
+      console.warn("Could not parse that op.gg link, falling back to reading it as a plain list", err);
+    }
+  }
+
+  let decoded = list;
+  try {
+    decoded = decodeURIComponent(list);
+  } catch {
+    // A stray % in a summoner name makes decoding throw — the raw text is still usable.
+  }
+
+  const players = decoded
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [gameName, tagLine] = splitRiotId(entry);
+      return gameName ? { gameName, tagLine } : { gameName: entry, tagLine: null };
+    });
+
+  return { region: region ? region.toLowerCase() : null, players };
+}
+
+async function askStrategy(question, category, opggUrl, author) {
+  const id = crypto.randomUUID();
+  const parsed = parseOpggMultiSearch(opggUrl);
+
+  try {
+    await setDoc(strategyDoc(id), {
+      type: "strategy",
+      question,
+      category: category || "General",
+      opggUrl: opggUrl || null,
+      askedBy: author || null,
+      status: "pending",
+      answer: null,
+      answeredAt: null,
+      // A concrete client Date (not serverTimestamp()) so a new question sorts to the top
+      // immediately instead of sitting as a null placeholder until the server confirms.
+      createdAt: new Date(),
+      scoutJson: null,
+      scoutError: null,
+    });
+  } catch (err) {
+    console.error(err);
+    setStrategyStatus("Could not save that question — check your connection and try again.", true);
+    return;
+  }
+
+  if (parsed.players.length > 0) {
+    scoutStrategy({ id, opggUrl });
+  }
+}
+
+async function deleteStrategy(id) {
+  try {
+    await deleteDoc(strategyDoc(id));
+  } catch (err) {
+    console.error(err);
+    setStrategyStatus("Could not delete that question — check your connection and try again.", true);
+  }
+}
+
+function setStrategyStatus(text, isError) {
+  strategyStatusText = text;
+  strategyStatusIsError = Boolean(isError);
+  renderStrategyTab();
+}
+
+// Pulls rank + recent champion pool for every player in the link, so the answer is written
+// against real data instead of guesses. The result is stored as a JSON string rather than a
+// nested Firestore map — it is only ever read back whole, and one string keeps the shape free
+// to change without a migration.
+async function scoutStrategy(entry) {
+  const parsed = parseOpggMultiSearch(entry.opggUrl);
+  if (parsed.players.length === 0) {
+    setStrategyStatus("No players found in that op.gg link.", true);
+    return;
+  }
+
+  scoutingId = entry.id;
+  setStrategyStatus(`Scouting ${parsed.players.length} player${parsed.players.length === 1 ? "" : "s"} through Riot…`, false);
+
+  try {
+    const players = [];
+    // Sequential on purpose: ten lobbies' worth of parallel lookups trips Riot's rate limit,
+    // and a scout that half-fails is worse than one that takes a few extra seconds.
+    for (const player of parsed.players) {
+      players.push(await scoutOnePlayer(player));
+    }
+
+    const scout = {
+      region: parsed.region,
+      matchesPerPlayer: SCOUT_MATCH_COUNT,
+      fetchedAt: new Date().toISOString(),
+      players,
+    };
+
+    await updateDoc(strategyDoc(entry.id), { scoutJson: JSON.stringify(scout), scoutError: null });
+
+    const failed = players.filter((p) => p.error).length;
+    setStrategyStatus(
+      failed === 0
+        ? "Lobby scouted — Claude can see the ranks and champion pools now."
+        : `Lobby scouted, but ${failed} player${failed === 1 ? "" : "s"} could not be looked up (see the card).`,
+      failed > 0
+    );
+  } catch (err) {
+    console.error(err);
+    const message = err.message || "Something went wrong scouting that lobby.";
+    try {
+      await updateDoc(strategyDoc(entry.id), { scoutError: message });
+    } catch (writeErr) {
+      console.error(writeErr);
+    }
+    setStrategyStatus(message, true);
+  } finally {
+    scoutingId = null;
+    renderStrategyTab();
+  }
+}
+
+async function scoutOnePlayer(player) {
+  const riotId = player.tagLine ? `${player.gameName}#${player.tagLine}` : player.gameName;
+  const matched = state.people.find((p) => (p.riotId || "").toLowerCase() === riotId.toLowerCase());
+  const base = { riotId, matchedPersonName: matched ? matched.name : null };
+
+  if (!player.tagLine) {
+    return { ...base, error: "No #tag in the link — Riot needs Name#TAG to look this player up." };
+  }
+
+  try {
+    const accountRes = await fetch(
+      `${RIOT_PROXY_BASE}/account?gameName=${encodeURIComponent(player.gameName)}&tagLine=${encodeURIComponent(player.tagLine)}`
+    );
+    const accountData = await accountRes.json();
+    if (!accountRes.ok) throw new Error(riotErrorMessage(accountData, "Could not find that Riot ID"));
+    const puuid = accountData.puuid;
+
+    const [rankedRes, matchIdsRes] = await Promise.all([
+      fetch(`${RIOT_PROXY_BASE}/ranked?puuid=${puuid}`),
+      fetch(`${RIOT_PROXY_BASE}/matches?puuid=${puuid}&count=${SCOUT_MATCH_COUNT}`),
+    ]);
+    const ranked = await rankedRes.json();
+    const matchIds = await matchIdsRes.json();
+    if (!rankedRes.ok) throw new Error(riotErrorMessage(ranked, "Could not load ranked stats"));
+    if (!matchIdsRes.ok) throw new Error(riotErrorMessage(matchIds, "Could not load match history"));
+
+    const matches = await Promise.all(
+      (Array.isArray(matchIds) ? matchIds : []).map((id) => fetch(`${RIOT_PROXY_BASE}/match/${id}`).then((r) => r.json()))
+    );
+    const stats = aggregateStats(matches, puuid);
+
+    const solo = (Array.isArray(ranked) ? ranked : []).find((r) => r.queueType === "RANKED_SOLO_5x5");
+    const flex = (Array.isArray(ranked) ? ranked : []).find((r) => r.queueType === "RANKED_FLEX_SR");
+
+    return {
+      ...base,
+      solo: solo ? summarizeRankedEntry(solo) : null,
+      flex: flex ? summarizeRankedEntry(flex) : null,
+      recent: {
+        games: stats.games,
+        wins: stats.wins,
+        losses: stats.losses,
+        kda: stats.deaths > 0 ? (stats.kills + stats.assists) / stats.deaths : stats.kills + stats.assists,
+        roles: Object.entries(stats.roles)
+          .sort((a, b) => b[1] - a[1])
+          .map(([role, games]) => ({ role: ROLE_DISPLAY_NAMES[role] || titleCase(role), games })),
+        champions: Object.entries(stats.champions)
+          .sort((a, b) => b[1].games - a[1].games)
+          .slice(0, 5)
+          .map(([name, c]) => ({
+            name,
+            games: c.games,
+            wins: c.wins,
+            kda: c.deaths > 0 ? (c.kills + c.assists) / c.deaths : c.kills + c.assists,
+          })),
+      },
+    };
+  } catch (err) {
+    console.error(err);
+    return { ...base, error: err.message || "Lookup failed." };
+  }
+}
+
+function summarizeRankedEntry(entry) {
+  return {
+    tier: `${titleCase(entry.tier)} ${entry.rank}`,
+    lp: entry.leaguePoints,
+    wins: entry.wins,
+    losses: entry.losses,
+  };
+}
+
+function parseScout(entry) {
+  if (!entry.scoutJson) return null;
+  try {
+    return JSON.parse(entry.scoutJson);
+  } catch (err) {
+    console.warn("Could not read the stored scout for strategy", entry.id, err);
+    return null;
+  }
+}
+
+// The plain-text version of a question, for pasting to Claude somewhere other than this app
+// (Discord, a chat window) when you'd rather not wait for the answer to land here.
+function strategyBriefText(entry) {
+  const lines = [`Strategy question (${entry.category || "General"}): ${entry.question}`];
+  if (entry.opggUrl) lines.push(`op.gg: ${entry.opggUrl}`);
+  lines.push(`Strategy id: ${entry.id}`);
+
+  const scout = parseScout(entry);
+  if (scout) {
+    lines.push("", `Lobby scouted from Riot (last ${scout.matchesPerPlayer} games each):`);
+    scout.players.forEach((p) => {
+      if (p.error) {
+        lines.push(`- ${p.riotId} — lookup failed: ${p.error}`);
+        return;
+      }
+      const who = p.matchedPersonName ? `${p.riotId} [${p.matchedPersonName}]` : p.riotId;
+      const rank = p.solo ? `${p.solo.tier} ${p.solo.lp} LP (${p.solo.wins}W/${p.solo.losses}L)` : "Unranked solo";
+      const roles = (p.recent?.roles || []).map((r) => `${r.role} x${r.games}`).join(", ") || "no recent games";
+      const champs =
+        (p.recent?.champions || [])
+          .map((c) => `${c.name} ${c.wins}/${c.games} (${c.kda.toFixed(1)} KDA)`)
+          .join(", ") || "none";
+      lines.push(`- ${who} — ${rank} · recent roles: ${roles} · champs: ${champs}`);
+    });
+  }
+
+  return lines.join("\n");
 }
 
 /* ---------- Draft simulator ---------- */
@@ -2533,4 +2858,318 @@ function renderDraftChampionGrid() {
       }
       els.draftChampionGrid.appendChild(node);
     });
+}
+
+/* ---------- Rendering: Strategy tab ---------- */
+
+function renderStrategyTab() {
+  els.strategyStatus.textContent = strategyStatusText;
+  els.strategyStatus.classList.toggle("error", strategyStatusIsError);
+
+  els.strategyList.innerHTML = "";
+  if (strategies.length === 0) {
+    els.strategyList.innerHTML = `<p class="empty-state">No strategy questions yet. Ask one above.</p>`;
+    return;
+  }
+
+  strategies.forEach((entry) => {
+    els.strategyList.appendChild(buildStrategyCard(entry));
+  });
+}
+
+function buildStrategyCard(entry) {
+  const card = document.createElement("div");
+  card.className = "strategy-card" + (entry.status === "answered" ? " answered" : " pending");
+
+  const header = document.createElement("div");
+  header.className = "strategy-card-header";
+
+  const badges = document.createElement("div");
+  badges.className = "strategy-badges";
+
+  const category = document.createElement("span");
+  category.className = "strategy-category";
+  category.textContent = entry.category || "General";
+
+  const status = document.createElement("span");
+  status.className = "strategy-status-badge " + (entry.status === "answered" ? "answered" : "pending");
+  status.textContent = entry.status === "answered" ? "Answered" : "Waiting on Claude";
+
+  badges.append(category, status);
+
+  const meta = document.createElement("span");
+  meta.className = "strategy-meta";
+  const askedAt = entry.createdAt?.toMillis ? formatRelativeTime(entry.createdAt.toMillis()) : "";
+  meta.textContent = [entry.askedBy || null, askedAt || null].filter(Boolean).join(" · ");
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "remove-note";
+  deleteBtn.textContent = "×";
+  deleteBtn.title = "Delete this question";
+  deleteBtn.addEventListener("click", () => {
+    if (confirm("Delete this strategy question and its answer?")) deleteStrategy(entry.id);
+  });
+
+  header.append(badges, meta);
+  card.append(deleteBtn, header);
+
+  const question = document.createElement("div");
+  question.className = "strategy-question";
+  question.textContent = entry.question;
+  card.appendChild(question);
+
+  const actions = document.createElement("div");
+  actions.className = "strategy-actions";
+
+  if (entry.opggUrl) {
+    const link = document.createElement("a");
+    link.className = "strategy-opgg-link";
+    link.href = entry.opggUrl;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = "Open op.gg multi-search";
+    actions.appendChild(link);
+
+    const rescoutBtn = document.createElement("button");
+    rescoutBtn.type = "button";
+    rescoutBtn.className = "strategy-small-btn";
+    const isScouting = scoutingId === entry.id;
+    rescoutBtn.disabled = isScouting;
+    rescoutBtn.textContent = isScouting ? "Scouting…" : entry.scoutJson ? "Re-scout lobby" : "Scout lobby";
+    rescoutBtn.addEventListener("click", () => scoutStrategy(entry));
+    actions.appendChild(rescoutBtn);
+  }
+
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "strategy-small-btn";
+  copyBtn.textContent = "Copy for Claude";
+  copyBtn.addEventListener("click", () => {
+    navigator.clipboard.writeText(strategyBriefText(entry)).then(
+      () => {
+        copyBtn.textContent = "Copied";
+        setTimeout(() => {
+          copyBtn.textContent = "Copy for Claude";
+        }, 1500);
+      },
+      () => setStrategyStatus("Could not copy — your browser blocked clipboard access.", true)
+    );
+  });
+  actions.appendChild(copyBtn);
+
+  card.appendChild(actions);
+
+  if (entry.scoutError) {
+    const err = document.createElement("div");
+    err.className = "strategy-scout-error";
+    err.textContent = `Scouting failed: ${entry.scoutError}`;
+    card.appendChild(err);
+  }
+
+  const scout = parseScout(entry);
+  if (scout) card.appendChild(buildScoutBlock(scout));
+
+  if (entry.status === "answered" && entry.answer) {
+    const answer = document.createElement("div");
+    answer.className = "strategy-answer";
+
+    const answerHeader = document.createElement("div");
+    answerHeader.className = "strategy-answer-header";
+    const answeredAt = entry.answeredAt?.toMillis ? ` · ${formatRelativeTime(entry.answeredAt.toMillis())}` : "";
+    answerHeader.textContent = `Claude${answeredAt}`;
+    answer.appendChild(answerHeader);
+
+    renderAnswerInto(answer, entry.answer);
+    card.appendChild(answer);
+  }
+
+  return card;
+}
+
+function buildScoutBlock(scout) {
+  const wrap = document.createElement("div");
+  wrap.className = "strategy-scout";
+
+  const heading = document.createElement("div");
+  heading.className = "strategy-scout-heading";
+  const when = scout.fetchedAt ? formatRelativeTime(new Date(scout.fetchedAt).getTime()) : "";
+  heading.textContent = `Lobby scout — last ${scout.matchesPerPlayer} games each${when ? ` · ${when}` : ""}`;
+  wrap.appendChild(heading);
+
+  (scout.players || []).forEach((p) => {
+    const row = document.createElement("div");
+    row.className = "scout-player";
+
+    const nameEl = document.createElement("div");
+    nameEl.className = "scout-player-name" + (p.matchedPersonName ? " matched" : "");
+    nameEl.textContent = p.matchedPersonName ? `${p.matchedPersonName} (${p.riotId})` : p.riotId;
+    row.appendChild(nameEl);
+
+    if (p.error) {
+      const err = document.createElement("div");
+      err.className = "scout-player-error";
+      err.textContent = p.error;
+      row.appendChild(err);
+      wrap.appendChild(row);
+      return;
+    }
+
+    const rank = document.createElement("div");
+    rank.className = "scout-player-rank";
+    const soloText = p.solo ? `${p.solo.tier} · ${p.solo.lp} LP · ${p.solo.wins}W/${p.solo.losses}L` : "Unranked (Solo/Duo)";
+    const flexText = p.flex ? ` · Flex ${p.flex.tier}` : "";
+    const roleText = (p.recent?.roles || []).length ? ` · ${p.recent.roles.map((r) => `${r.role} ×${r.games}`).join(" ")}` : "";
+    rank.textContent = soloText + flexText + roleText;
+    row.appendChild(rank);
+
+    const champs = document.createElement("div");
+    champs.className = "scout-player-champs";
+    if (!(p.recent?.champions || []).length) {
+      champs.textContent = "No recent games found.";
+    } else {
+      p.recent.champions.forEach((c) => {
+        const chip = document.createElement("span");
+        chip.className = "scout-champ";
+
+        const champ = findChampionByName(c.name);
+        if (champ) {
+          const img = document.createElement("img");
+          img.src = champ.image;
+          img.alt = champ.name;
+          chip.appendChild(img);
+        }
+
+        const label = document.createElement("span");
+        const winRate = c.games > 0 ? Math.round((c.wins / c.games) * 100) : 0;
+        label.textContent = `${champ ? champ.name : c.name} ${c.games}g ${winRate}% ${c.kda.toFixed(1)} KDA`;
+        chip.appendChild(label);
+
+        champs.appendChild(chip);
+      });
+    }
+    row.appendChild(champs);
+
+    wrap.appendChild(row);
+  });
+
+  return wrap;
+}
+
+// A deliberately small Markdown subset — enough for the shape an answer actually takes
+// (headings, bullets, bold, champion names) and nothing else. Everything is built as DOM
+// nodes rather than innerHTML, so an answer can never inject markup into the page.
+function renderAnswerInto(container, text) {
+  const lines = String(text).replace(/\r\n/g, "\n").split("\n");
+  let list = null;
+  let paragraph = null;
+
+  const closeBlocks = () => {
+    list = null;
+    paragraph = null;
+  };
+
+  lines.forEach((rawLine) => {
+    const line = rawLine.trimEnd();
+
+    if (!line.trim()) {
+      closeBlocks();
+      return;
+    }
+
+    const heading = line.match(/^(#{2,4})\s+(.*)$/);
+    if (heading) {
+      closeBlocks();
+      const el = document.createElement(heading[1].length === 2 ? "h4" : "h5");
+      el.className = "strategy-answer-heading";
+      appendInline(el, heading[2]);
+      container.appendChild(el);
+      return;
+    }
+
+    if (/^(---|\*\*\*)$/.test(line.trim())) {
+      closeBlocks();
+      container.appendChild(document.createElement("hr"));
+      return;
+    }
+
+    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+    const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (bullet || numbered) {
+      const wantedTag = bullet ? "UL" : "OL";
+      if (!list || list.tagName !== wantedTag) {
+        list = document.createElement(bullet ? "ul" : "ol");
+        list.className = "strategy-answer-list";
+        container.appendChild(list);
+      }
+      paragraph = null;
+      const li = document.createElement("li");
+      appendInline(li, (bullet || numbered)[1]);
+      list.appendChild(li);
+      return;
+    }
+
+    list = null;
+    if (!paragraph) {
+      paragraph = document.createElement("p");
+      paragraph.className = "strategy-answer-p";
+      container.appendChild(paragraph);
+    } else {
+      paragraph.appendChild(document.createTextNode(" "));
+    }
+    appendInline(paragraph, line.trim());
+  });
+}
+
+// Inline markers, scanned in one pass: **bold**, `code`, and [[Champion]] which becomes an
+// icon chip so a comp or ban list is readable at a glance instead of being a wall of names.
+function appendInline(parent, text) {
+  const pattern = /\*\*(.+?)\*\*|`([^`]+)`|\[\[([^\]]+)\]\]/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parent.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+    }
+
+    if (match[1] !== undefined) {
+      const strong = document.createElement("strong");
+      // Recurse: a bolded champion name (**[[Ahri]]**) is a normal thing to write, and the
+      // non-greedy ** match can never contain another **, so this cannot loop.
+      appendInline(strong, match[1]);
+      parent.appendChild(strong);
+    } else if (match[2] !== undefined) {
+      const code = document.createElement("code");
+      code.textContent = match[2];
+      parent.appendChild(code);
+    } else {
+      parent.appendChild(buildChampionMention(match[3]));
+    }
+
+    lastIndex = pattern.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    parent.appendChild(document.createTextNode(text.slice(lastIndex)));
+  }
+}
+
+function buildChampionMention(name) {
+  const champ = findChampionByName(name.trim());
+  const chip = document.createElement("span");
+  chip.className = "champ-mention";
+
+  if (champ) {
+    const img = document.createElement("img");
+    img.src = champ.image;
+    img.alt = champ.name;
+    chip.appendChild(img);
+  }
+
+  const label = document.createElement("span");
+  label.textContent = champ ? champ.name : name.trim();
+  chip.appendChild(label);
+
+  return chip;
 }

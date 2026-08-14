@@ -42,6 +42,7 @@
         <button class="tab-btn" data-tab="customs">Customs</button>
         <button class="tab-btn" data-tab="notes">Notes</button>
         <button class="tab-btn" data-tab="draft">Draft</button>
+        <button class="tab-btn" data-tab="strategy">Strategy</button>
       </nav>
 
       <div id="poolTab" class="tab-panel active">
@@ -229,6 +230,36 @@
 
         <input id="draftChampionSearch" type="text" placeholder="Search champions…" autocomplete="off" />
         <div id="draftChampionGrid" class="champion-grid all-grid"></div>
+      </div>
+
+      <div id="strategyTab" class="tab-panel">
+        <form id="askStrategyForm" class="ask-strategy-form">
+          <textarea
+            id="newStrategyQuestion"
+            placeholder="Ask for a strategy — e.g. &quot;what should we ban against this lobby?&quot; or &quot;build a comp around our jungler&quot;"
+            required
+          ></textarea>
+          <input
+            id="newStrategyOpgg"
+            type="text"
+            placeholder="op.gg multi-search link (optional) — every player in it gets scouted"
+            autocomplete="off"
+          />
+          <div class="ask-strategy-row">
+            <select id="newStrategyCategory"></select>
+            <input id="newStrategyAuthor" type="text" placeholder="Your name (optional)" autocomplete="off" />
+            <button type="submit">Ask Claude</button>
+          </div>
+        </form>
+
+        <p class="matches-status">
+          Questions wait here until Claude answers them — answers appear live, no reload needed. Paste an op.gg
+          multi-search link and the lobby gets scouted through Riot first, so the answer is written against real ranks
+          and champion pools.
+        </p>
+        <div id="strategyStatus" class="matches-status"></div>
+
+        <div id="strategyList" class="comps-list"></div>
       </div>
     </section>
   </main>
