@@ -3005,10 +3005,12 @@ function renderAnswerInto(container, text) {
   const lines = String(text).replace(/\r\n/g, "\n").split("\n");
   let list = null;
   let paragraph = null;
+  let table = null;
 
   const closeBlocks = () => {
     list = null;
     paragraph = null;
+    table = null;
   };
 
   lines.forEach((rawLine) => {
@@ -3034,6 +3036,41 @@ function renderAnswerInto(container, text) {
       container.appendChild(document.createElement("hr"));
       return;
     }
+
+    // Pipe tables: a scouted lobby is naturally a table, so answers get to use one. The
+    // |---|---| separator row is what marks the row above it as the header.
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      const cells = line.trim().slice(1, -1).split("|");
+      if (cells.every((c) => /^\s*:?-+:?\s*$/.test(c))) {
+        if (table) table.headerDone = true;
+        return;
+      }
+
+      if (!table) {
+        const el = document.createElement("table");
+        el.className = "strategy-answer-table";
+        const head = document.createElement("thead");
+        const bodyEl = document.createElement("tbody");
+        el.append(head, bodyEl);
+        container.appendChild(el);
+        table = { head, body: bodyEl, rows: 0, headerDone: false };
+        paragraph = null;
+        list = null;
+      }
+
+      const tr = document.createElement("tr");
+      cells.forEach((cell) => {
+        // Row zero is the header only if a separator row follows; until then it goes in the
+        // head and simply looks like a first row if none ever does.
+        const td = document.createElement(table.rows === 0 ? "th" : "td");
+        appendInline(td, cell.trim());
+        tr.appendChild(td);
+      });
+      (table.rows === 0 ? table.head : table.body).appendChild(tr);
+      table.rows++;
+      return;
+    }
+    table = null;
 
     const bullet = line.match(/^\s*[-*]\s+(.*)$/);
     const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
