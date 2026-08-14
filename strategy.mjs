@@ -35,6 +35,8 @@ import {
   formatScoutedPlayer,
   importRecentRequests,
   formatScoutedPlayerMatches,
+  formatScoutedPlayerProfile,
+  loadStaticIndex,
   parseOpggMultiSearch,
   requestBudget,
   scoutLobby,
@@ -142,9 +144,11 @@ function formatEntry(entry, { verbose } = {}) {
 
   const scout = parseScout(entry);
   if (scout) {
-    lines.push(`  Lobby scout (last ${scout.matchesPerPlayer} games each, fetched ${scout.fetchedAt}):`);
+    const depth = scout.sampleTarget || scout.matchesPerPlayer;
+    lines.push(`  Lobby poll (up to ${depth} ranked games each, fetched ${scout.fetchedAt}):`);
     scout.players.forEach((p) => {
       lines.push(`    ${formatScoutedPlayer(p)}`);
+      formatScoutedPlayerProfile(p).forEach((l) => lines.push(`      ${l}`));
       if (verbose) formatScoutedPlayerMatches(p).forEach((m) => lines.push(`        ${m}`));
     });
   } else if (entry.opggUrl) {
@@ -248,6 +252,10 @@ async function cmdScout(args) {
   const { players } = parseOpggMultiSearch(url);
   guardRiotSpend(players.length, target, args);
 
+  // Data Dragon, not Riot's API — no key and no rate limit, and it turns numeric ban ids into
+  // champion names in the output below.
+  await loadStaticIndex().catch(() => {});
+
   const scout = await scoutLobby(url, await loadRoster(), {
     target,
     onProgress: ({ index, total, riotId, stage, found }) => {
@@ -258,7 +266,8 @@ async function cmdScout(args) {
   console.log(`Lobby poll — up to ${scout.sampleTarget} ranked games each (solo + flex)${scout.region ? `, ${scout.region}` : ""}:`);
   scout.players.forEach((p) => {
     console.log(`  ${formatScoutedPlayer(p)}`);
-    formatScoutedPlayerMatches(p).forEach((m) => console.log(`      ${m}`));
+    formatScoutedPlayerProfile(p).forEach((l) => console.log(`      ${l}`));
+    if (args.includes("--games-detail")) formatScoutedPlayerMatches(p).forEach((m) => console.log(`        ${m}`));
   });
 
   const idIndex = args.indexOf("--id");

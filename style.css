@@ -1955,6 +1955,40 @@ h3 {
   font-size: 0.72rem;
 }
 
+.scout-player-profile {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.scout-profile-line {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.notes-person-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.notes-person-picker label {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  flex-shrink: 0;
+}
+
+.notes-person-picker select {
+  flex: 1;
+  min-width: 0;
+}
+
 .strategy-answer {
   margin-top: 12px;
   border-top: 1px solid var(--border);

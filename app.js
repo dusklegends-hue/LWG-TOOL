@@ -16,6 +16,8 @@ import {
   configureMatchCache,
   estimateLobbyCost,
   formatScoutedPlayer,
+  formatScoutedPlayerProfile,
+  loadStaticIndex,
   parseOpggMultiSearch,
   requestBudget,
   riotErrorMessage,
@@ -244,6 +246,10 @@ async function init() {
     championDataError = err;
   });
 
+  // Rune and summoner-spell names for the scout profiles. Static CDN data, no Riot key and no
+  // rate limit — and not fatal if it fails, since the ids just stay unresolved.
+  loadStaticIndex().catch((err) => console.warn("Could not load rune/spell names", err));
+
   const firstPeopleSnapshotPromise = new Promise((resolve) => {
     onSnapshot(
       peopleCol,
@@ -436,6 +442,7 @@ function cacheEls() {
   els.statsRolesSection = document.getElementById("statsRolesSection");
   els.statsChampionsSection = document.getElementById("statsChampionsSection");
   els.customGamesList = document.getElementById("customGamesList");
+  els.notesPersonSelect = document.getElementById("notesPersonSelect");
   els.noPersonSelectedNotes = document.getElementById("noPersonSelectedNotes");
   els.playerNotesContent = document.getElementById("playerNotesContent");
   els.notesPersonName = document.getElementById("notesPersonName");
@@ -544,6 +551,12 @@ function bindStaticEvents() {
   els.refreshStatsBtn.addEventListener("click", () => {
     const person = getSelectedPerson();
     if (person) loadStatsData(person);
+  });
+
+  // The dropdown drives the same selection the sidebar does, so the two never disagree and
+  // the other player-scoped tabs follow along.
+  els.notesPersonSelect.addEventListener("change", () => {
+    selectPerson(els.notesPersonSelect.value || null);
   });
 
   els.addPlayerNoteForm.addEventListener("submit", (e) => {
@@ -2589,6 +2602,8 @@ function buildCustomGameTeam(label, participants) {
 
 function renderNotesTab() {
   const person = getSelectedPerson();
+  renderNotesPersonPicker(person);
+
   if (!person) {
     els.noPersonSelectedNotes.classList.remove("hidden");
     els.playerNotesContent.classList.add("hidden");
@@ -2606,6 +2621,28 @@ function renderNotesTab() {
     els.draftNotesList,
     notes.filter((n) => n.type === "draft")
   );
+}
+
+function renderNotesPersonPicker(person) {
+  const select = els.notesPersonSelect;
+  // Rebuilding drops focus, which would fight someone mid-keyboard-selection.
+  if (document.activeElement === select) return;
+
+  select.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = state.people.length ? "Choose a player…" : "No players yet";
+  select.appendChild(placeholder);
+
+  state.people.forEach((p) => {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.name;
+    select.appendChild(opt);
+  });
+
+  select.value = person ? person.id : "";
+  select.disabled = state.people.length === 0;
 }
 
 function renderNotesList(container, list) {
@@ -2952,6 +2989,21 @@ function buildScoutBlock(scout) {
       r.champions.slice(0, 6).forEach((c) => champs.appendChild(buildScoutChampionRow(c)));
     }
     row.appendChild(champs);
+
+    // Laning shape, side bias, objective habits, contested picks and rune/spell tendencies.
+    // Rendered from the same formatter the CLI prints, so the tab and a pasted brief agree.
+    const profile = formatScoutedPlayerProfile(p);
+    if (profile.length) {
+      const wrap = document.createElement("div");
+      wrap.className = "scout-player-profile";
+      profile.forEach((line) => {
+        const el = document.createElement("div");
+        el.className = "scout-profile-line";
+        el.textContent = line;
+        wrap.appendChild(el);
+      });
+      row.appendChild(wrap);
+    }
 
     wrap.appendChild(row);
   });
