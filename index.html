@@ -9,7 +9,7 @@
 <!-- The ?v= tag pins each cached index.html to the exact app.js/style.css it shipped with,
      so a mid-deploy cache can never pair old markup with new code and break startup.
      Bump it on every deploy that touches app.js or style.css. -->
-<link rel="stylesheet" href="style.css?v=2" />
+<link rel="stylesheet" href="style.css?v=3" />
 </head>
 <body>
   <header class="topbar">
@@ -137,6 +137,10 @@
           </div>
 
           <button id="loadMatchesBtn" type="button" class="load-matches-btn">Load match data</button>
+          <div class="queue-toggle" id="matchesQueueToggle">
+            <button type="button" data-queue="420" class="active">Solo Queue</button>
+            <button type="button" data-queue="440">Flex Queue</button>
+          </div>
           <div id="matchesStatus" class="matches-status"></div>
 
           <div id="rankedSection" class="matches-section"></div>
@@ -156,6 +160,10 @@
           </div>
 
           <button id="refreshStatsBtn" type="button" class="load-matches-btn">Refresh Stats</button>
+          <div class="queue-toggle" id="statsQueueToggle">
+            <button type="button" data-queue="420" class="active">Solo Queue</button>
+            <button type="button" data-queue="440">Flex Queue</button>
+          </div>
           <div id="statsStatus" class="matches-status"></div>
 
           <div id="statsSummarySection" class="matches-section"></div>
@@ -279,6 +287,7 @@
           <div class="ask-strategy-row">
             <select id="newStrategyCategory"></select>
             <select id="newStrategySampleSize" title="Ranked games to poll per player"></select>
+            <select id="newStrategyQueueScope" title="Which queues the scout reads"></select>
             <input id="newStrategyAuthor" type="text" placeholder="Your name (optional)" autocomplete="off" />
             <button type="submit">Ask Claude</button>
           </div>
@@ -304,6 +313,6 @@
     </div>
   </template>
 
-  <script type="module" src="app.js?v=2"></script>
+  <script type="module" src="app.js?v=3"></script>
 </body>
 </html>

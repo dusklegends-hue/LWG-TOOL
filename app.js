@@ -78,6 +78,14 @@ const UI_STORAGE_KEY = "championPoolManager.ui.v1";
 const DDRAGON_BASE = "https://ddragon.leagueoflegends.com";
 const STATS_MATCH_COUNT = 20;
 const STRATEGY_CATEGORIES = ["General", "Team Comp", "Bans", "Draft", "Matchup", "Scouting"];
+// What the scout reads. "stack" narrows flex to games where every player in the link was on
+// the same team — the closest ranked data gets to how a 5-stack actually plays together.
+const QUEUE_SCOPES = {
+  both: "Solo + Flex",
+  solo: "Solo Queue only",
+  flex: "Flex Queue only",
+  stack: "Flex — this 5 together",
+};
 const SAMPLE_SIZES = [10, 20, 30];
 const MATCH_CACHE_KEY = "championPoolManager.matchSummaries.v1";
 // Roughly 3000 summaries is a few hundred KB — well inside localStorage's 5MB, and enough to
@@ -205,6 +213,9 @@ let compPickerSearch = ""; // search text for the currently expanded picker
 let riotIdEditingId = null; // person id whose Riot ID is mid-edit, or null
 let riotIdDraftValue = ""; // in-progress (unsaved) text for that edit
 let matchesCache = {}; // personId -> { ranked, live, matches, loadError }
+// One switch for both tabs: you're either reading someone's solo queue or their flex queue,
+// and flipping tabs shouldn't silently change which one you're looking at. 420 solo, 440 flex.
+let rankedQueueFilter = 420;
 let matchesLoadingId = null; // person id currently fetching match data, or null
 let statsCache = {}; // personId -> { games, wins, losses, kills, deaths, assists, roles, champions, loadError }
 let statsLoadingId = null; // person id currently fetching stats, or null
@@ -443,6 +454,8 @@ function cacheEls() {
   els.statsContent = document.getElementById("statsContent");
   els.statsPersonName = document.getElementById("statsPersonName");
   els.refreshStatsBtn = document.getElementById("refreshStatsBtn");
+  els.matchesQueueToggle = document.getElementById("matchesQueueToggle");
+  els.statsQueueToggle = document.getElementById("statsQueueToggle");
   els.statsStatus = document.getElementById("statsStatus");
   els.statsSummarySection = document.getElementById("statsSummarySection");
   els.statsRolesSection = document.getElementById("statsRolesSection");
@@ -486,6 +499,7 @@ function cacheEls() {
   els.newStrategyOpgg = document.getElementById("newStrategyOpgg");
   els.newStrategyCategory = document.getElementById("newStrategyCategory");
   els.newStrategySampleSize = document.getElementById("newStrategySampleSize");
+  els.newStrategyQueueScope = document.getElementById("newStrategyQueueScope");
   els.newStrategyAuthor = document.getElementById("newStrategyAuthor");
   els.strategyStatus = document.getElementById("strategyStatus");
   els.strategyList = document.getElementById("strategyList");
@@ -559,6 +573,19 @@ function bindStaticEvents() {
     if (person) loadStatsData(person);
   });
 
+  // The two toggles are one control drawn twice — picking Flex on Stats means Matches is on
+  // Flex too when you get there.
+  [els.matchesQueueToggle, els.statsQueueToggle].forEach((toggle) => {
+    toggle.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-queue]");
+      if (!btn) return;
+      rankedQueueFilter = Number(btn.dataset.queue);
+      syncQueueToggles();
+      renderMatchesTab();
+      renderStatsTab();
+    });
+  });
+
   // The dropdown drives the same selection the sidebar does, so the two never disagree and
   // the other player-scoped tabs follow along.
   els.notesPersonSelect.addEventListener("change", () => {
@@ -626,6 +653,13 @@ function bindStaticEvents() {
   });
   els.newStrategySampleSize.value = String(RANKED_SAMPLE_TARGET);
 
+  Object.entries(QUEUE_SCOPES).forEach(([value, label]) => {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = label;
+    els.newStrategyQueueScope.appendChild(opt);
+  });
+
   els.askStrategyForm.addEventListener("submit", (e) => {
     e.preventDefault();
     const question = els.newStrategyQuestion.value.trim();
@@ -633,7 +667,7 @@ function bindStaticEvents() {
     const opggUrl = els.newStrategyOpgg.value.trim();
     const category = els.newStrategyCategory.value;
     const author = els.newStrategyAuthor.value.trim();
-    askStrategy(question, category, opggUrl, author, Number(els.newStrategySampleSize.value));
+    askStrategy(question, category, opggUrl, author, Number(els.newStrategySampleSize.value), els.newStrategyQueueScope.value);
     els.newStrategyQuestion.value = "";
     els.newStrategyOpgg.value = "";
   });
@@ -1197,25 +1231,25 @@ function confirmRiotSpend(playerCount, sampleSize) {
   );
 }
 
-async function askStrategy(question, category, opggUrl, author, sampleSize = RANKED_SAMPLE_TARGET) {
+async function askStrategy(question, category, opggUrl, author, sampleSize = RANKED_SAMPLE_TARGET, queueScope = "both") {
   const id = crypto.randomUUID();
   const parsed = parseOpggMultiSearch(opggUrl);
 
   if (parsed.players.length > 0 && !confirmRiotSpend(parsed.players.length, sampleSize)) {
     setStrategyStatus("Question saved without polling the lobby — use Scout lobby on the card when you're ready.", false);
-    await saveStrategyQuestion(id, question, category, opggUrl, author, sampleSize);
+    await saveStrategyQuestion(id, question, category, opggUrl, author, sampleSize, queueScope);
     return;
   }
 
-  const saved = await saveStrategyQuestion(id, question, category, opggUrl, author, sampleSize);
+  const saved = await saveStrategyQuestion(id, question, category, opggUrl, author, sampleSize, queueScope);
   if (!saved) return;
 
   if (parsed.players.length > 0) {
-    scoutStrategy({ id, opggUrl, sampleSize });
+    scoutStrategy({ id, opggUrl, sampleSize, queueScope });
   }
 }
 
-async function saveStrategyQuestion(id, question, category, opggUrl, author, sampleSize) {
+async function saveStrategyQuestion(id, question, category, opggUrl, author, sampleSize, queueScope) {
   try {
     await setDoc(strategyDoc(id), {
       type: "strategy",
@@ -1227,6 +1261,7 @@ async function saveStrategyQuestion(id, question, category, opggUrl, author, sam
       answer: null,
       answeredAt: null,
       sampleSize: sampleSize || RANKED_SAMPLE_TARGET,
+      queueScope: queueScope || "both",
       // A concrete client Date (not serverTimestamp()) so a new question sorts to the top
       // immediately instead of sitting as a null placeholder until the server confirms.
       createdAt: new Date(),
@@ -1273,16 +1308,18 @@ async function scoutStrategy(entry, { alreadyConfirmed = false } = {}) {
     return;
   }
 
+  const queueScope = entry.queueScope || "both";
   scoutingId = entry.id;
   setStrategyStatus(
     `Polling ${parsed.players.length} player${parsed.players.length === 1 ? "" : "s"} — up to ` +
-      `${sampleSize} ranked games each.`,
+      `${sampleSize} ranked games each (${QUEUE_SCOPES[queueScope] || QUEUE_SCOPES.both}).`,
     false
   );
 
   try {
     const scout = await scoutLobby(entry.opggUrl, state.people, {
       target: sampleSize,
+      queueScope,
       onProgress: ({ index, total, riotId, stage, found }) => {
         const position = `Player ${index + 1} of ${total}`;
         setStrategyStatus(
@@ -2542,10 +2579,12 @@ async function loadMatchData(person) {
       await updateDoc(personDoc(person.id), { puuid });
     }
 
+    // 20 rather than 5: the proxy can't filter by queue, so the solo/flex split happens here,
+    // and a 5-game window regularly contains none of the queue being asked about.
     const [rankedRes, liveRes, matchIdsRes] = await Promise.all([
       riotFetch(`/ranked?puuid=${puuid}`),
       riotFetch(`/live?puuid=${puuid}`),
-      riotFetch(`/matches?puuid=${puuid}&count=5`),
+      riotFetch(`/matches?puuid=${puuid}&count=${STATS_MATCH_COUNT}`),
     ]);
     const ranked = rankedRes.data;
     const live = liveRes.data;
@@ -2560,13 +2599,28 @@ async function loadMatchData(person) {
     );
 
     matchesCache[person.id] = { ranked, live, matches, puuid };
+    // The Stats tab aggregates these exact same games — hand them over so it costs nothing.
+    statsCache[person.id] = splitStatsByQueue(matches, puuid);
   } catch (err) {
     console.error(err);
     matchesCache[person.id] = { loadError: err.message || "Something went wrong loading match data." };
   } finally {
     matchesLoadingId = null;
     renderMatchesTab();
+    renderStatsTab();
   }
+}
+
+function queueFilterLabel() {
+  return rankedQueueFilter === 420 ? "Solo Queue" : "Flex Queue";
+}
+
+function syncQueueToggles() {
+  [els.matchesQueueToggle, els.statsQueueToggle].forEach((toggle) => {
+    toggle.querySelectorAll("button[data-queue]").forEach((btn) => {
+      btn.classList.toggle("active", Number(btn.dataset.queue) === rankedQueueFilter);
+    });
+  });
 }
 
 function renderMatchesTab() {
@@ -2704,18 +2758,20 @@ function renderHistorySection(cached) {
   if (!cached || cached.loadError || !cached.matches) return;
 
   const heading = document.createElement("h3");
-  heading.textContent = "Recent Matches";
+  heading.textContent = `Recent ${queueFilterLabel()} Matches`;
   els.historySection.appendChild(heading);
 
-  if (cached.matches.length === 0) {
+  const filtered = cached.matches.filter((m) => m?.info?.queueId === rankedQueueFilter);
+
+  if (filtered.length === 0) {
     const p = document.createElement("p");
     p.className = "empty-state";
-    p.textContent = "No recent matches found.";
+    p.textContent = `No ${queueFilterLabel()} games in their last ${cached.matches.length} matches.`;
     els.historySection.appendChild(p);
     return;
   }
 
-  cached.matches.forEach((match) => {
+  filtered.forEach((match) => {
     if (!match || !match.info) return;
     const me = match.info.participants.find((p) => p.puuid === cached.puuid);
     if (!me) return;
@@ -2756,8 +2812,32 @@ function renderHistorySection(cached) {
 
 /* ---------- Stats (aggregated from Riot match history) ---------- */
 
+// The proxy can't ask Riot for one queue, so both aggregates come out of a single fetch and
+// the toggle just picks which one to show — flipping it is free.
+function splitStatsByQueue(matches, puuid) {
+  return {
+    fetched: matches.filter((m) => m?.info).length,
+    solo: aggregateStats(matches.filter((m) => m?.info?.queueId === 420), puuid),
+    flex: aggregateStats(matches.filter((m) => m?.info?.queueId === 440), puuid),
+  };
+}
+
+// The queue-selected slice of a person's stats cache, with errors passed straight through.
+function selectedStats(cached) {
+  if (!cached || cached.loadError) return cached;
+  return rankedQueueFilter === 420 ? cached.solo : cached.flex;
+}
+
 async function loadStatsData(person) {
   if (!person.riotId) return;
+
+  // The Matches tab fetches the same 20 games — if they're already here, this is free.
+  const shared = matchesCache[person.id];
+  if (shared && !shared.loadError && Array.isArray(shared.matches) && shared.puuid) {
+    statsCache[person.id] = splitStatsByQueue(shared.matches, shared.puuid);
+    renderStatsTab();
+    return;
+  }
 
   statsLoadingId = person.id;
   renderStatsTab();
@@ -2785,7 +2865,7 @@ async function loadStatsData(person) {
       (Array.isArray(matchIds) ? matchIds : []).map((id) => riotFetch(`/match/${id}`).then((r) => r.data))
     );
 
-    statsCache[person.id] = aggregateStats(matches, puuid);
+    statsCache[person.id] = splitStatsByQueue(matches, puuid);
   } catch (err) {
     console.error(err);
     statsCache[person.id] = { loadError: err.message || "Something went wrong loading stats." };
@@ -2824,9 +2904,10 @@ function renderStatsTab() {
     els.statsStatus.textContent = "";
   }
 
-  renderStatsSummary(cached);
-  renderStatsRoles(cached);
-  renderStatsChampions(cached);
+  const selected = selectedStats(cached);
+  renderStatsSummary(selected, cached);
+  renderStatsRoles(selected);
+  renderStatsChampions(selected);
 }
 
 function buildStatCard(label, value, sub, valueClass) {
@@ -2849,11 +2930,12 @@ function buildStatCard(label, value, sub, valueClass) {
   return card;
 }
 
-function renderStatsSummary(cached) {
+function renderStatsSummary(cached, full) {
   els.statsSummarySection.innerHTML = "";
   if (!cached || cached.loadError) return;
   if (cached.games === 0) {
-    els.statsSummarySection.innerHTML = `<p class="empty-state">No matches found to analyze.</p>`;
+    const fetched = full?.fetched ?? 0;
+    els.statsSummarySection.innerHTML = `<p class="empty-state">No ${queueFilterLabel()} games in their last ${fetched} matches.</p>`;
     return;
   }
 
@@ -2878,7 +2960,11 @@ function renderStatsSummary(cached) {
   const kda = cached.deaths > 0 ? ((cached.kills + cached.assists) / cached.deaths).toFixed(2) : "Perfect";
   const kdaCard = buildStatCard("Avg KDA", `${avgK} / ${avgD} / ${avgA}`, `${kda} KDA ratio`);
 
-  const gamesCard = buildStatCard("Games Analyzed", String(cached.games), "most recent matches");
+  const gamesCard = buildStatCard(
+    "Games Analyzed",
+    String(cached.games),
+    `${queueFilterLabel()}, of their last ${full?.fetched ?? cached.games} games`
+  );
 
   wrap.append(recordCard, kdaCard, gamesCard);
   els.statsSummarySection.appendChild(wrap);
@@ -3164,7 +3250,10 @@ function buildCustomGameCard(game) {
 
   const teamsWrap = document.createElement("div");
   teamsWrap.className = "custom-game-teams";
-  teamsWrap.append(buildCustomGameTeam("Blue Side", blueSide, game), buildCustomGameTeam("Red Side", redSide, game));
+  teamsWrap.append(
+    buildCustomGameTeam("Blue Side", blueSide, game, 100),
+    buildCustomGameTeam("Red Side", redSide, game, 200)
+  );
   card.appendChild(teamsWrap);
 
   card.appendChild(buildGameReviewSection(game));
@@ -3255,7 +3344,7 @@ function buildGameReviewCard(review) {
   return card;
 }
 
-function buildCustomGameTeam(label, participants, game) {
+function buildCustomGameTeam(label, participants, game, teamId) {
   const wrap = document.createElement("div");
   wrap.className = "custom-game-team";
 
@@ -3263,11 +3352,24 @@ function buildCustomGameTeam(label, participants, game) {
   const teamDamage = participants.reduce((sum, p) => sum + (p.damageToChampions || 0), 0);
   const minutes = game?.gameDurationSeconds ? game.gameDurationSeconds / 60 : 0;
 
+  // In a tournament-draft custom the bans are a genuine team decision — show them with the side.
+  const teamRecord = (game?.teams || []).find((t) => t.teamId === teamId);
+  const banNames = (teamRecord?.bans || [])
+    .map((id) => championsByKey[String(id)]?.name)
+    .filter(Boolean);
+
   const won = participants.length > 0 && participants[0].win;
   const labelEl = document.createElement("div");
   labelEl.className = "custom-game-team-label" + (participants.length ? (won ? " win" : " loss") : "");
   labelEl.textContent = participants.length ? `${label} — ${won ? "Victory" : "Defeat"}` : label;
   wrap.appendChild(labelEl);
+
+  if (banNames.length) {
+    const bansEl = document.createElement("div");
+    bansEl.className = "custom-game-bans";
+    bansEl.textContent = `Bans: ${banNames.join(", ")}`;
+    wrap.appendChild(bansEl);
+  }
 
   participants.forEach((p) => {
     const row = document.createElement("div");

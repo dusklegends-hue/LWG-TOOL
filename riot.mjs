@@ -276,6 +276,11 @@ export function summarizeMatch(match, puuid) {
     queue: RANKED_QUEUES[match.info.queueId] || null,
     playedAt: match.info.gameEndTimestamp || match.info.gameStartTimestamp || null,
 
+    // Who was on this player's team. Four puuids is what lets a flex sample be narrowed to
+    // "games this exact stack queued together" instead of flex-with-random-teammates.
+    matchId: match.metadata?.matchId || null,
+    allies: match.info.participants.filter((p) => p.teamId === me.teamId && p.puuid !== me.puuid).map((p) => p.puuid),
+
     side: me.teamId === 100 ? "blue" : "red",
     spells: [me.summoner1Id, me.summoner2Id].filter(Boolean),
     keystone: me.perks?.styles?.[0]?.selections?.[0]?.perk ?? null,
@@ -311,7 +316,7 @@ export function summarizeMatch(match, puuid) {
 
 // Bumped whenever the summary shape gains fields, so old rows are refetched rather than
 // silently reported as missing data. One prefix invalidates the browser and the CLI together.
-const SUMMARY_VERSION = "v2";
+const SUMMARY_VERSION = "v3";
 
 async function getMatchSummary(matchId, puuid) {
   loadCache();
@@ -574,7 +579,7 @@ function championBreakdown(rows) {
 // Walks their recent games newest-first and keeps the ranked ones until it has enough. The
 // walk stops early the moment the target is met, so a player who only plays ranked costs
 // barely more than the target itself.
-async function collectRankedSample(puuid, { target, window, onProgress }) {
+async function collectRankedSample(puuid, { target, window, onProgress, queues = ["solo", "flex"] }) {
   const { ok, data: ids } = await riotFetch(`/matches?puuid=${puuid}&count=${window}`);
   if (!ok) throw new Error(riotErrorMessage(ids, "Could not load match history"));
 
@@ -585,7 +590,9 @@ async function collectRankedSample(puuid, { target, window, onProgress }) {
     if (rows.length >= target) break;
     scanned++;
     const summary = await getMatchSummary(id, puuid);
-    if (summary && summary.queue && !summary.remake) rows.push(summary);
+    // The queue is only knowable from the match record itself (the proxy can't pre-filter),
+    // so a narrowed scope changes what counts toward the target, not what gets fetched.
+    if (summary && summary.queue && !summary.remake && queues.includes(summary.queue)) rows.push(summary);
     if (onProgress && scanned % 10 === 0) onProgress({ scanned, found: rows.length });
   }
 
@@ -595,7 +602,7 @@ async function collectRankedSample(puuid, { target, window, onProgress }) {
 // roster is the shared player list ([{ name, riotId }]) so a scouted account that belongs to
 // one of ours is labelled as such instead of reading as a stranger.
 export async function scoutOnePlayer(player, roster = [], options = {}) {
-  const { target = RANKED_SAMPLE_TARGET, window = CANDIDATE_WINDOW, onProgress } = options;
+  const { target = RANKED_SAMPLE_TARGET, window = CANDIDATE_WINDOW, onProgress, queues = ["solo", "flex"] } = options;
   const riotId = player.tagLine ? `${player.gameName}#${player.tagLine}` : player.gameName;
   const matched = roster.find((p) => (p.riotId || "").toLowerCase() === riotId.toLowerCase());
   const base = { riotId, matchedPersonName: matched ? matched.name : null };
@@ -614,60 +621,23 @@ export async function scoutOnePlayer(player, roster = [], options = {}) {
     const ranked = await riotFetch(`/ranked?puuid=${puuid}`);
     if (!ranked.ok) throw new Error(riotErrorMessage(ranked.data, "Could not load ranked stats"));
 
-    const { rows, scanned, candidates } = await collectRankedSample(puuid, { target, window, onProgress });
+    const { rows, scanned, candidates } = await collectRankedSample(puuid, { target, window, onProgress, queues });
 
     const rankedList = Array.isArray(ranked.data) ? ranked.data : [];
     const solo = rankedList.find((r) => r.queueType === "RANKED_SOLO_5x5");
     const flex = rankedList.find((r) => r.queueType === "RANKED_FLEX_SR");
 
-    const soloRows = rows.filter((r) => r.queue === "solo");
-    const flexRows = rows.filter((r) => r.queue === "flex");
-    const wins = rows.filter((r) => r.win).length;
-    const kills = rows.reduce((s, r) => s + r.kills, 0);
-    const deaths = rows.reduce((s, r) => s + r.deaths, 0);
-    const assists = rows.reduce((s, r) => s + r.assists, 0);
-
-    const roleCounts = {};
-    rows.forEach((r) => {
-      roleCounts[r.role] = (roleCounts[r.role] || 0) + 1;
-    });
-
-    const championList = championBreakdown(rows);
-
     return {
       ...base,
+      puuid,
       solo: solo ? summarizeRankedEntry(solo) : null,
       flex: flex ? summarizeRankedEntry(flex) : null,
-      recent: {
-        games: rows.length,
-        wins,
-        losses: rows.length - wins,
-        winRate: winRate(wins, rows.length),
-        soloGames: soloRows.length,
-        soloWinRate: winRate(soloRows.filter((r) => r.win).length, soloRows.length),
-        flexGames: flexRows.length,
-        flexWinRate: winRate(flexRows.filter((r) => r.win).length, flexRows.length),
-        // How hard we had to dig says something on its own: 30 ranked games inside the last
-        // 30 played is a ranked regular, 30 inside 60 is someone splitting with ARAM.
-        scanned,
-        candidates,
-        kda: deaths > 0 ? (kills + assists) / deaths : kills + assists,
-        roles: Object.entries(roleCounts)
-          .sort((a, b) => b[1] - a[1])
-          .map(([role, games]) => ({ role, games })),
-        champions: championList,
-        matches: rows,
-        lane: laneProfile(rows),
-        sides: sideRecord(rows),
-        objectives: objectiveProfile(rows),
-        contest: contestProfile(rows, championList),
-      },
+      recent: buildRecentProfile(rows, scanned, candidates),
     };
   } catch (err) {
     // Hitting the rate limit is not this player's problem — it stops the whole scout, so it
-    // travels up rather than being recorded as "this account could not be read".
-    if (err.rateLimited) throw err;
-
+    // is rethrown for the lobby loop to handle rather than swallowed here.
+    if (err && err.rateLimited) throw err;
     // One unreachable player must not sink the scout, and the reason travels on the record
     // itself — a bare stack trace per player buries the report that follows.
     const message = err.message || "Lookup failed.";
@@ -676,8 +646,61 @@ export async function scoutOnePlayer(player, roster = [], options = {}) {
   }
 }
 
+// The whole per-player readout, computed from whatever row subset the caller hands over —
+// the full sample on a normal scout, or just the stack games when the lobby is narrowed to
+// "these five, together".
+function buildRecentProfile(rows, scanned, candidates) {
+  const soloRows = rows.filter((r) => r.queue === "solo");
+  const flexRows = rows.filter((r) => r.queue === "flex");
+  const wins = rows.filter((r) => r.win).length;
+  const kills = rows.reduce((s, r) => s + r.kills, 0);
+  const deaths = rows.reduce((s, r) => s + r.deaths, 0);
+  const assists = rows.reduce((s, r) => s + r.assists, 0);
+
+  const roleCounts = {};
+  rows.forEach((r) => {
+    roleCounts[r.role] = (roleCounts[r.role] || 0) + 1;
+  });
+
+  const championList = championBreakdown(rows);
+
+  return {
+    games: rows.length,
+    wins,
+    losses: rows.length - wins,
+    winRate: winRate(wins, rows.length),
+    soloGames: soloRows.length,
+    soloWinRate: winRate(soloRows.filter((r) => r.win).length, soloRows.length),
+    flexGames: flexRows.length,
+    flexWinRate: winRate(flexRows.filter((r) => r.win).length, flexRows.length),
+    // How hard we had to dig says something on its own: 30 ranked games inside the last
+    // 30 played is a ranked regular, 30 inside 60 is someone splitting with ARAM.
+    scanned,
+    candidates,
+    kda: deaths > 0 ? (kills + assists) / deaths : kills + assists,
+    roles: Object.entries(roleCounts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([role, games]) => ({ role, games })),
+    champions: championList,
+    matches: rows,
+    lane: laneProfile(rows),
+    sides: sideRecord(rows),
+    objectives: objectiveProfile(rows),
+    contest: contestProfile(rows, championList),
+  };
+}
+
 export async function scoutLobby(opggUrl, roster = [], options = {}) {
-  const { onProgress, onPlayer, target = RANKED_SAMPLE_TARGET, window = CANDIDATE_WINDOW } = options;
+  const {
+    onProgress,
+    onPlayer,
+    target = RANKED_SAMPLE_TARGET,
+    window = CANDIDATE_WINDOW,
+    // "both" | "solo" | "flex" | "stack" — stack is flex narrowed to games where every scouted
+    // player in the link was on the same team, i.e. this exact group queued together.
+    queueScope = "both",
+  } = options;
+  const queues = queueScope === "solo" ? ["solo"] : queueScope === "flex" || queueScope === "stack" ? ["flex"] : ["solo", "flex"];
   const parsed = parseOpggMultiSearch(opggUrl);
   if (parsed.players.length === 0) throw new Error("No players found in that op.gg link.");
 
@@ -693,6 +716,7 @@ export async function scoutLobby(opggUrl, roster = [], options = {}) {
       scouted = await scoutOnePlayer(player, roster, {
         target,
         window,
+        queues,
         onProgress: (p) => onProgress?.({ index, total: parsed.players.length, riotId: label, stage: "scanning", ...p }),
       });
     } catch (err) {
@@ -708,11 +732,38 @@ export async function scoutLobby(opggUrl, roster = [], options = {}) {
     if (onPlayer) await onPlayer(scouted, players);
   }
 
+  // Stack mode: keep only the flex games where every scouted player was on the same team.
+  // Each player's own row for those games survives, so the per-player readouts stay personal
+  // while the sample becomes "this exact group, queued together".
+  if (queueScope === "stack") {
+    const puuids = players.filter((p) => p.puuid && p.recent).map((p) => p.puuid);
+    players.forEach((p) => {
+      if (!p.recent || !p.puuid) return;
+      const others = puuids.filter((x) => x !== p.puuid);
+      const sampledGames = p.recent.games;
+      const stackRows =
+        others.length === 0
+          ? []
+          : p.recent.matches.filter((r) => r.queue === "flex" && others.every((o) => (r.allies || []).includes(o)));
+      p.recent = buildRecentProfile(stackRows, p.recent.scanned, p.recent.candidates);
+      p.recent.stackOf = puuids.length;
+      p.recent.sampledFrom = sampledGames;
+    });
+  }
+
+  const queueLabels = {
+    both: "ranked solo + flex",
+    solo: "ranked solo only",
+    flex: "ranked flex only",
+    stack: "ranked flex, this group queued together only",
+  };
+
   return {
     region: parsed.region,
     sampleTarget: target,
     candidateWindow: window,
-    queues: "ranked solo + flex",
+    queues: queueLabels[queueScope] || queueLabels.both,
+    queueScope,
     fetchedAt: new Date().toISOString(),
     players,
   };
@@ -727,8 +778,11 @@ export function formatScoutedPlayer(p) {
   const rank = p.solo ? `${p.solo.tier} ${p.solo.lp}LP ${p.solo.wins}W/${p.solo.losses}L` : "Unranked solo";
   const flex = p.flex ? `, Flex ${p.flex.tier}` : "";
   const r = p.recent || {};
-  const sample =
-    r.games > 0
+  const sample = r.stackOf
+    ? r.games > 0
+      ? `${r.games} flex games queued as this ${r.stackOf}-stack (from ${r.sampledFrom} flex sampled) ${r.winRate}%WR`
+      : `no flex games with this exact ${r.stackOf}-stack in the sample`
+    : r.games > 0
       ? `last ${r.games} ranked ${r.winRate}%WR (solo ${r.soloGames}g ${r.soloWinRate}%, flex ${r.flexGames}g ${r.flexWinRate}%)`
       : "no ranked games in the window";
   const roles = (r.roles || []).map((x) => `${x.role}×${x.games}`).join("/") || "no roles";

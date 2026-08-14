@@ -1047,6 +1047,35 @@ h3 {
   cursor: default;
 }
 
+.queue-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  margin: 0 0 8px 10px;
+  vertical-align: middle;
+}
+
+.queue-toggle button {
+  background: var(--bg-panel-2);
+  border: none;
+  border-radius: 0;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 6px 14px;
+}
+
+.queue-toggle button + button {
+  border-left: 1px solid var(--border);
+}
+
+.queue-toggle button.active {
+  background: var(--gold);
+  color: var(--bg);
+}
+
 .matches-status {
   color: var(--text-dim);
   font-size: 0.85rem;
@@ -1362,6 +1391,12 @@ h3 {
 
 .custom-game-team-label.loss {
   color: var(--danger);
+}
+
+.custom-game-bans {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  margin: -2px 0 4px;
 }
 
 .custom-game-participant {

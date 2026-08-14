@@ -130,11 +130,56 @@ function Send-CustomGameToFirestore($gameId, $matchData) {
           assists           = @{ integerValue = [string]$p.stats.assists }
           win               = @{ booleanValue = [bool]$p.stats.win }
           teamId            = @{ integerValue = [string]$p.teamId }
-          damageToChampions = ConvertTo-FirestoreInt $p.stats.totalDamageDealtToChampions
-          damageTaken       = ConvertTo-FirestoreInt $p.stats.totalDamageTaken
-          goldEarned        = ConvertTo-FirestoreInt $p.stats.goldEarned
-          cs                = ConvertTo-FirestoreInt ([int]$p.stats.totalMinionsKilled + [int]$p.stats.neutralMinionsKilled)
-          visionScore       = ConvertTo-FirestoreInt $p.stats.visionScore
+          # Damage, split by type and target. The split matters for review: "low damage" reads
+          # differently on a tank (check mitigated/taken) than on a carry (check share and DPM).
+          damageToChampions   = ConvertTo-FirestoreInt $p.stats.totalDamageDealtToChampions
+          physicalToChampions = ConvertTo-FirestoreInt $p.stats.physicalDamageDealtToChampions
+          magicToChampions    = ConvertTo-FirestoreInt $p.stats.magicDamageDealtToChampions
+          trueToChampions     = ConvertTo-FirestoreInt $p.stats.trueDamageDealtToChampions
+          damageTaken         = ConvertTo-FirestoreInt $p.stats.totalDamageTaken
+          damageMitigated     = ConvertTo-FirestoreInt $p.stats.damageSelfMitigated
+          damageToObjectives  = ConvertTo-FirestoreInt $p.stats.damageDealtToObjectives
+          damageToTurrets     = ConvertTo-FirestoreInt $p.stats.damageDealtToTurrets
+          totalHeal           = ConvertTo-FirestoreInt $p.stats.totalHeal
+          ccScore             = ConvertTo-FirestoreInt $p.stats.timeCCingOthers
+
+          # Economy and farm. Team-jungle vs enemy-jungle CS separates "farmed own camps"
+          # from "invaded and stole" — a jungler review can't be done without it.
+          goldEarned          = ConvertTo-FirestoreInt $p.stats.goldEarned
+          goldSpent           = ConvertTo-FirestoreInt $p.stats.goldSpent
+          cs                  = ConvertTo-FirestoreInt ([int]$p.stats.totalMinionsKilled + [int]$p.stats.neutralMinionsKilled)
+          laneCs              = ConvertTo-FirestoreInt $p.stats.totalMinionsKilled
+          jungleCsOwn         = ConvertTo-FirestoreInt $p.stats.neutralMinionsKilledTeamJungle
+          jungleCsEnemy       = ConvertTo-FirestoreInt $p.stats.neutralMinionsKilledEnemyJungle
+          champLevel          = ConvertTo-FirestoreInt $p.stats.champLevel
+
+          # Vision, the stat scrim teams argue about most.
+          visionScore         = ConvertTo-FirestoreInt $p.stats.visionScore
+          wardsPlaced         = ConvertTo-FirestoreInt $p.stats.wardsPlaced
+          wardsKilled         = ConvertTo-FirestoreInt $p.stats.wardsKilled
+          controlWardsBought  = ConvertTo-FirestoreInt $p.stats.visionWardsBoughtInGame
+
+          # Kill patterns and early-game firsts.
+          largestMultiKill    = ConvertTo-FirestoreInt $p.stats.largestMultiKill
+          largestSpree        = ConvertTo-FirestoreInt $p.stats.largestKillingSpree
+          doubleKills         = ConvertTo-FirestoreInt $p.stats.doubleKills
+          tripleKills         = ConvertTo-FirestoreInt $p.stats.tripleKills
+          quadraKills         = ConvertTo-FirestoreInt $p.stats.quadraKills
+          pentaKills          = ConvertTo-FirestoreInt $p.stats.pentaKills
+          firstBloodKill      = ConvertTo-FirestoreBool $p.stats.firstBloodKill
+          firstTowerKill      = ConvertTo-FirestoreBool $p.stats.firstTowerKill
+          turretKills         = ConvertTo-FirestoreInt $p.stats.turretKills
+          inhibitorKills      = ConvertTo-FirestoreInt $p.stats.inhibitorKills
+          longestTimeAlive    = ConvertTo-FirestoreInt $p.stats.longestTimeSpentLiving
+
+          # The loadout: spells and final build, for "what did you even buy" review moments.
+          spell1Id            = ConvertTo-FirestoreInt $p.spell1Id
+          spell2Id            = ConvertTo-FirestoreInt $p.spell2Id
+          items               = @{ arrayValue = @{ values = @(
+                                  @($p.stats.item0, $p.stats.item1, $p.stats.item2, $p.stats.item3,
+                                    $p.stats.item4, $p.stats.item5, $p.stats.item6) |
+                                    ForEach-Object { @{ integerValue = [string][int]$_ } }
+                                ) } }
           matchedPersonId   = if ($matchedPerson) { @{ stringValue = $matchedPerson.Id } } else { @{ nullValue = $null } }
           matchedPersonName = if ($matchedPerson) { @{ stringValue = $matchedPerson.Name } } else { @{ nullValue = $null } }
         }
@@ -161,6 +206,12 @@ function Send-CustomGameToFirestore($gameId, $matchData) {
           baronKills      = ConvertTo-FirestoreInt  $t.baronKills
           dragonKills     = ConvertTo-FirestoreInt  $t.dragonKills
           riftHeraldKills = ConvertTo-FirestoreInt  $t.riftHeraldKills
+          # Customs are the one place bans are a real team decision (in solo queue they're ten
+          # strangers' picks), so a tournament-draft custom's bans are worth keeping.
+          bans            = @{ arrayValue = @{ values = @(
+                              @($t.bans) | Where-Object { $_ -and $_.championId -gt 0 } |
+                                ForEach-Object { @{ integerValue = [string]$_.championId } }
+                            ) } }
         }
       }
     }
