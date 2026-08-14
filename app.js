@@ -8,6 +8,17 @@ import {
   deleteDoc,
   onSnapshot,
 } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
+import {
+  RIOT_PROXY_BASE,
+  ROLE_DISPLAY_NAMES,
+  aggregateStats,
+  formatScoutedPlayer,
+  parseOpggMultiSearch,
+  riotErrorMessage,
+  scoutLobby,
+  splitRiotId,
+  titleCase,
+} from "./riot.mjs";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDXoWE7c9CgXqDfCaHBfQJhoKkcU5AUv88",
@@ -57,21 +68,8 @@ const COMP_ROLES = ["Top", "Jungle", "Mid", "ADC", "Support"];
 const TIERS = ["S", "A", "B", "C"];
 const UI_STORAGE_KEY = "championPoolManager.ui.v1";
 const DDRAGON_BASE = "https://ddragon.leagueoflegends.com";
-const RIOT_PROXY_BASE = "https://lwg-riot-proxy.dusklegends-lwg.workers.dev";
 const STATS_MATCH_COUNT = 20;
-// Scouting fans out over up to 10 players at once, so it pulls far fewer matches each than
-// the Stats tab does — a whole lobby at STATS_MATCH_COUNT would blow the Riot rate limit.
-const SCOUT_MATCH_COUNT = 8;
 const STRATEGY_CATEGORIES = ["General", "Team Comp", "Bans", "Draft", "Matchup", "Scouting"];
-const ROLE_DISPLAY_NAMES = {
-  TOP: "Top",
-  JUNGLE: "Jungle",
-  MIDDLE: "Mid",
-  BOTTOM: "ADC",
-  UTILITY: "Support",
-  OTHER: "Other/ARAM",
-};
-
 // Standard tournament draft order: 6 bans, 6 picks, 4 more bans, 4 more picks.
 const DRAFT_SEQUENCE = [
   { side: "blue", type: "ban" },
@@ -981,59 +979,6 @@ async function deleteNote(id) {
 
 /* ---------- Strategy (questions for Claude + op.gg lobby scouting) ---------- */
 
-// op.gg multi-search links come in several shapes and people also just paste a list of
-// Riot IDs, so this accepts all of them and returns whatever it can make sense of:
-//   https://op.gg/lol/multisearch/na?summoners=Name%23TAG,Other%23TAG
-//   https://www.op.gg/multisearch/euw?summoners=...
-//   https://na.op.gg/multi/query=name1%2Cname2      (legacy — no tags in it)
-//   Name#TAG, Other#TAG                             (raw paste)
-function parseOpggMultiSearch(raw) {
-  const text = (raw || "").trim();
-  if (!text) return { region: null, players: [] };
-
-  let region = null;
-  let list = text;
-
-  if (/op\.gg/i.test(text)) {
-    try {
-      const url = new URL(text.startsWith("http") ? text : `https://${text}`);
-
-      const hostParts = url.hostname.split(".");
-      if (hostParts.length > 2 && hostParts[0] !== "www") region = hostParts[0];
-
-      const segments = url.pathname.split("/").filter(Boolean);
-      const multiIndex = segments.findIndex((s) => s === "multisearch" || s === "multi");
-      if (multiIndex !== -1 && segments[multiIndex + 1] && !segments[multiIndex + 1].includes("query=")) {
-        region = segments[multiIndex + 1];
-      }
-
-      // The legacy form hides the names in the path ("/multi/query=a%2Cb") rather than a real query string.
-      const pathQuery = url.pathname.match(/query=(.*)$/);
-      list = url.searchParams.get("summoners") || url.searchParams.get("query") || (pathQuery ? pathQuery[1] : "");
-    } catch (err) {
-      console.warn("Could not parse that op.gg link, falling back to reading it as a plain list", err);
-    }
-  }
-
-  let decoded = list;
-  try {
-    decoded = decodeURIComponent(list);
-  } catch {
-    // A stray % in a summoner name makes decoding throw — the raw text is still usable.
-  }
-
-  const players = decoded
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .map((entry) => {
-      const [gameName, tagLine] = splitRiotId(entry);
-      return gameName ? { gameName, tagLine } : { gameName: entry, tagLine: null };
-    });
-
-  return { region: region ? region.toLowerCase() : null, players };
-}
-
 async function askStrategy(question, category, opggUrl, author) {
   const id = crypto.randomUUID();
   const parsed = parseOpggMultiSearch(opggUrl);
@@ -1095,23 +1040,10 @@ async function scoutStrategy(entry) {
   setStrategyStatus(`Scouting ${parsed.players.length} player${parsed.players.length === 1 ? "" : "s"} through Riot…`, false);
 
   try {
-    const players = [];
-    // Sequential on purpose: ten lobbies' worth of parallel lookups trips Riot's rate limit,
-    // and a scout that half-fails is worse than one that takes a few extra seconds.
-    for (const player of parsed.players) {
-      players.push(await scoutOnePlayer(player));
-    }
-
-    const scout = {
-      region: parsed.region,
-      matchesPerPlayer: SCOUT_MATCH_COUNT,
-      fetchedAt: new Date().toISOString(),
-      players,
-    };
-
+    const scout = await scoutLobby(entry.opggUrl, state.people);
     await updateDoc(strategyDoc(entry.id), { scoutJson: JSON.stringify(scout), scoutError: null });
 
-    const failed = players.filter((p) => p.error).length;
+    const failed = scout.players.filter((p) => p.error).length;
     setStrategyStatus(
       failed === 0
         ? "Lobby scouted — Claude can see the ranks and champion pools now."
@@ -1131,78 +1063,6 @@ async function scoutStrategy(entry) {
     scoutingId = null;
     renderStrategyTab();
   }
-}
-
-async function scoutOnePlayer(player) {
-  const riotId = player.tagLine ? `${player.gameName}#${player.tagLine}` : player.gameName;
-  const matched = state.people.find((p) => (p.riotId || "").toLowerCase() === riotId.toLowerCase());
-  const base = { riotId, matchedPersonName: matched ? matched.name : null };
-
-  if (!player.tagLine) {
-    return { ...base, error: "No #tag in the link — Riot needs Name#TAG to look this player up." };
-  }
-
-  try {
-    const accountRes = await fetch(
-      `${RIOT_PROXY_BASE}/account?gameName=${encodeURIComponent(player.gameName)}&tagLine=${encodeURIComponent(player.tagLine)}`
-    );
-    const accountData = await accountRes.json();
-    if (!accountRes.ok) throw new Error(riotErrorMessage(accountData, "Could not find that Riot ID"));
-    const puuid = accountData.puuid;
-
-    const [rankedRes, matchIdsRes] = await Promise.all([
-      fetch(`${RIOT_PROXY_BASE}/ranked?puuid=${puuid}`),
-      fetch(`${RIOT_PROXY_BASE}/matches?puuid=${puuid}&count=${SCOUT_MATCH_COUNT}`),
-    ]);
-    const ranked = await rankedRes.json();
-    const matchIds = await matchIdsRes.json();
-    if (!rankedRes.ok) throw new Error(riotErrorMessage(ranked, "Could not load ranked stats"));
-    if (!matchIdsRes.ok) throw new Error(riotErrorMessage(matchIds, "Could not load match history"));
-
-    const matches = await Promise.all(
-      (Array.isArray(matchIds) ? matchIds : []).map((id) => fetch(`${RIOT_PROXY_BASE}/match/${id}`).then((r) => r.json()))
-    );
-    const stats = aggregateStats(matches, puuid);
-
-    const solo = (Array.isArray(ranked) ? ranked : []).find((r) => r.queueType === "RANKED_SOLO_5x5");
-    const flex = (Array.isArray(ranked) ? ranked : []).find((r) => r.queueType === "RANKED_FLEX_SR");
-
-    return {
-      ...base,
-      solo: solo ? summarizeRankedEntry(solo) : null,
-      flex: flex ? summarizeRankedEntry(flex) : null,
-      recent: {
-        games: stats.games,
-        wins: stats.wins,
-        losses: stats.losses,
-        kda: stats.deaths > 0 ? (stats.kills + stats.assists) / stats.deaths : stats.kills + stats.assists,
-        roles: Object.entries(stats.roles)
-          .sort((a, b) => b[1] - a[1])
-          .map(([role, games]) => ({ role: ROLE_DISPLAY_NAMES[role] || titleCase(role), games })),
-        champions: Object.entries(stats.champions)
-          .sort((a, b) => b[1].games - a[1].games)
-          .slice(0, 5)
-          .map(([name, c]) => ({
-            name,
-            games: c.games,
-            wins: c.wins,
-            kda: c.deaths > 0 ? (c.kills + c.assists) / c.deaths : c.kills + c.assists,
-          })),
-      },
-    };
-  } catch (err) {
-    console.error(err);
-    return { ...base, error: err.message || "Lookup failed." };
-  }
-}
-
-function summarizeRankedEntry(entry) {
-  return {
-    tier: `${titleCase(entry.tier)} ${entry.rank}`,
-    lp: entry.leaguePoints,
-    wins: entry.wins,
-    losses: entry.losses,
-  };
 }
 
 function parseScout(entry) {
@@ -1225,20 +1085,7 @@ function strategyBriefText(entry) {
   const scout = parseScout(entry);
   if (scout) {
     lines.push("", `Lobby scouted from Riot (last ${scout.matchesPerPlayer} games each):`);
-    scout.players.forEach((p) => {
-      if (p.error) {
-        lines.push(`- ${p.riotId} — lookup failed: ${p.error}`);
-        return;
-      }
-      const who = p.matchedPersonName ? `${p.riotId} [${p.matchedPersonName}]` : p.riotId;
-      const rank = p.solo ? `${p.solo.tier} ${p.solo.lp} LP (${p.solo.wins}W/${p.solo.losses}L)` : "Unranked solo";
-      const roles = (p.recent?.roles || []).map((r) => `${r.role} x${r.games}`).join(", ") || "no recent games";
-      const champs =
-        (p.recent?.champions || [])
-          .map((c) => `${c.name} ${c.wins}/${c.games} (${c.kda.toFixed(1)} KDA)`)
-          .join(", ") || "none";
-      lines.push(`- ${who} — ${rank} · recent roles: ${roles} · champs: ${champs}`);
-    });
+    scout.players.forEach((p) => lines.push(`- ${formatScoutedPlayer(p)}`));
   }
 
   return lines.join("\n");
@@ -2107,18 +1954,6 @@ function buildCompChampionPicker(comp, role) {
 
 /* ---------- Match data (Riot API via Cloudflare proxy) ---------- */
 
-function riotErrorMessage(body, fallback) {
-  if (typeof body?.status?.message === "string") return body.status.message;
-  if (typeof body?.error === "string") return body.error;
-  return fallback;
-}
-
-function splitRiotId(riotId) {
-  const idx = riotId.lastIndexOf("#");
-  if (idx === -1) return [null, null];
-  return [riotId.slice(0, idx).trim(), riotId.slice(idx + 1).trim()];
-}
-
 async function loadMatchData(person) {
   if (!person.riotId) return;
 
@@ -2206,11 +2041,6 @@ function renderMatchesTab() {
   renderRankedSection(cached);
   renderLiveSection(cached);
   renderHistorySection(cached);
-}
-
-function titleCase(str) {
-  if (!str) return "";
-  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
 }
 
 function formatDuration(seconds) {
@@ -2403,43 +2233,6 @@ async function loadStatsData(person) {
     statsLoadingId = null;
     renderStatsTab();
   }
-}
-
-function aggregateStats(matches, puuid) {
-  let games = 0;
-  let wins = 0;
-  let losses = 0;
-  let kills = 0;
-  let deaths = 0;
-  let assists = 0;
-  const roles = {};
-  const champions = {};
-
-  matches.forEach((match) => {
-    if (!match || !match.info) return;
-    const me = match.info.participants.find((p) => p.puuid === puuid);
-    if (!me) return;
-
-    games++;
-    if (me.win) wins++;
-    else losses++;
-    kills += me.kills;
-    deaths += me.deaths;
-    assists += me.assists;
-
-    const role = me.teamPosition || "OTHER";
-    roles[role] = (roles[role] || 0) + 1;
-
-    const champKey = me.championName;
-    if (!champions[champKey]) champions[champKey] = { games: 0, wins: 0, kills: 0, deaths: 0, assists: 0 };
-    champions[champKey].games++;
-    if (me.win) champions[champKey].wins++;
-    champions[champKey].kills += me.kills;
-    champions[champKey].deaths += me.deaths;
-    champions[champKey].assists += me.assists;
-  });
-
-  return { games, wins, losses, kills, deaths, assists, roles, champions };
 }
 
 function renderStatsTab() {
@@ -3042,7 +2835,8 @@ function buildScoutBlock(scout) {
 
         const label = document.createElement("span");
         const winRate = c.games > 0 ? Math.round((c.wins / c.games) * 100) : 0;
-        label.textContent = `${champ ? champ.name : c.name} ${c.games}g ${winRate}% ${c.kda.toFixed(1)} KDA`;
+        const damage = c.dpm ? ` ${c.dpm} DPM ${c.damageShare}%` : "";
+        label.textContent = `${champ ? champ.name : c.name} ${c.games}g ${winRate}% ${c.kda.toFixed(1)} KDA${damage}`;
         chip.appendChild(label);
 
         champs.appendChild(chip);

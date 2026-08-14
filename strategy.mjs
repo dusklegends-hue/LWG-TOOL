@@ -12,9 +12,13 @@ same open access. No API key, no build step, no dependencies (Node 18+ for globa
 
   node strategy.mjs list                     # questions waiting for an answer
   node strategy.mjs list --all               # answered ones too
-  node strategy.mjs get <id>                 # one question in full, scout included
+  node strategy.mjs get <id>                 # one question in full, game by game
   node strategy.mjs answer <id> <file.md>    # write an answer ("-" reads stdin)
+  node strategy.mjs scout <opgg-url>         # scout a lobby right here ("--id X" saves it onto X)
   node strategy.mjs ask "question" [--category Bans] [--opgg URL] [--answer file.md]
+
+Handed an op.gg multi-search link in a chat window, `scout` is the whole job: it reads the
+players out of the link, pulls their ranks and recent games from Riot, and prints them.
 
 Answers are Markdown-lite: ## headings, - bullets, 1. numbered, **bold**, `code`, and
 [[Champion Name]] which the tab renders as a champion icon chip. Anything fancier than
@@ -22,6 +26,7 @@ that is shown as plain text, so keep to those.
 */
 
 import { readFileSync } from "node:fs";
+import { formatScoutedPlayer, formatScoutedPlayerMatches, scoutLobby } from "./riot.mjs";
 
 const BASE = "https://firestore.googleapis.com/v1/projects/champ-pool-lwg/databases/(default)/documents";
 // Strategy entries share the "notes" collection under type "strategy" — the Firestore rules
@@ -82,6 +87,11 @@ async function listStrategies() {
 
 /* ---------- Formatting ---------- */
 
+async function loadRoster() {
+  const body = await firestore("/people?pageSize=100");
+  return (body.documents || []).map((d) => fromFields(d.fields || {}));
+}
+
 function formatEntry(entry, { verbose } = {}) {
   const lines = [];
   const asked = entry.createdAt ? entry.createdAt.toISOString().replace("T", " ").slice(0, 16) : "unknown time";
@@ -94,7 +104,10 @@ function formatEntry(entry, { verbose } = {}) {
   const scout = parseScout(entry);
   if (scout) {
     lines.push(`  Lobby scout (last ${scout.matchesPerPlayer} games each, fetched ${scout.fetchedAt}):`);
-    scout.players.forEach((p) => lines.push(`    ${formatScoutedPlayer(p)}`));
+    scout.players.forEach((p) => {
+      lines.push(`    ${formatScoutedPlayer(p)}`);
+      if (verbose) formatScoutedPlayerMatches(p).forEach((m) => lines.push(`        ${m}`));
+    });
   } else if (entry.opggUrl) {
     lines.push("  (no scout stored — run a scout from the tab, or answer without one)");
   }
@@ -113,20 +126,6 @@ function parseScout(entry) {
   } catch {
     return null;
   }
-}
-
-function formatScoutedPlayer(p) {
-  const who = p.matchedPersonName ? `${p.riotId} [roster: ${p.matchedPersonName}]` : p.riotId;
-  if (p.error) return `${who} — lookup failed: ${p.error}`;
-
-  const rank = p.solo ? `${p.solo.tier} ${p.solo.lp}LP ${p.solo.wins}W/${p.solo.losses}L` : "Unranked solo";
-  const flex = p.flex ? `, Flex ${p.flex.tier}` : "";
-  const roles = (p.recent?.roles || []).map((r) => `${r.role}x${r.games}`).join("/") || "no recent games";
-  const champs =
-    (p.recent?.champions || [])
-      .map((c) => `${c.name} ${c.wins}/${c.games} ${c.kda.toFixed(1)}kda`)
-      .join(", ") || "none";
-  return `${who} — ${rank}${flex} · ${roles} · ${champs}`;
 }
 
 /* ---------- Commands ---------- */
@@ -186,6 +185,33 @@ async function cmdAnswer(args) {
   console.log(`Answered ${id} — it is live in the Strategy tab now.`);
 }
 
+async function cmdScout(args) {
+  const url = args.find((a) => !a.startsWith("--"));
+  if (!url) throw new Error("Usage: strategy.mjs scout <opgg-multisearch-url> [--id <strategyId>]");
+
+  const scout = await scoutLobby(url, await loadRoster());
+  console.log(`Lobby scout — last ${scout.matchesPerPlayer} games each${scout.region ? `, ${scout.region}` : ""}:`);
+  scout.players.forEach((p) => {
+    console.log(`  ${formatScoutedPlayer(p)}`);
+    formatScoutedPlayerMatches(p).forEach((m) => console.log(`      ${m}`));
+  });
+
+  const idIndex = args.indexOf("--id");
+  if (idIndex !== -1 && args[idIndex + 1]) {
+    const id = args[idIndex + 1];
+    const fields = toFields({ scoutJson: JSON.stringify(scout), scoutError: null, opggUrl: url });
+    const mask = Object.keys(fields)
+      .map((f) => `updateMask.fieldPaths=${f}`)
+      .join("&");
+    await firestore(`/${COLLECTION}/${encodeURIComponent(id)}?${mask}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fields }),
+    });
+    console.log(`\nSaved onto ${id} — the card in the tab shows it now.`);
+  }
+}
+
 async function cmdAsk(args) {
   const question = args.find((a) => !a.startsWith("--"));
   if (!question) throw new Error('Usage: strategy.mjs ask "question" [--category X] [--opgg URL] [--answer file.md]');
@@ -222,7 +248,7 @@ async function cmdAsk(args) {
 }
 
 const [command, ...args] = process.argv.slice(2);
-const commands = { list: cmdList, get: cmdGet, answer: cmdAnswer, ask: cmdAsk };
+const commands = { list: cmdList, get: cmdGet, answer: cmdAnswer, scout: cmdScout, ask: cmdAsk };
 
 if (!commands[command]) {
   console.log(
@@ -231,6 +257,7 @@ if (!commands[command]) {
       "  node strategy.mjs list [--all]",
       "  node strategy.mjs get <id>",
       "  node strategy.mjs answer <id> <file.md>",
+      "  node strategy.mjs scout <opgg-url> [--id <strategyId>]",
       '  node strategy.mjs ask "question" [--category X] [--opgg URL] [--by name] [--answer file.md]',
     ].join("\n")
   );
