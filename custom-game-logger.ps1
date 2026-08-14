@@ -1,12 +1,12 @@
-<#
-LWG Team Tool — Custom Game Logger
+﻿<#
+LWG Team Tool â€” Custom Game Logger
 -----------------------------------
 Run this while the League client is open, before/during your custom games.
-Leave it running in a PowerShell window — it polls the client every few
+Leave it running in a PowerShell window â€” it polls the client every few
 seconds, and when a CUSTOM game finishes, it grabs the end-of-game stats
 for all 10 participants and uploads them to the shared roster's database.
 
-Only ONE person in the lobby needs to run this — the end-of-game data
+Only ONE person in the lobby needs to run this â€” the end-of-game data
 already includes every participant, not just yours.
 
 This talks only to:
@@ -15,7 +15,7 @@ This talks only to:
 It does not need your Riot API key and does not touch Riot's cloud API.
 
 NOTE FROM CLAUDE: the League client's local API (LCU) is not officially
-documented or guaranteed stable by Riot — this script is built from
+documented or guaranteed stable by Riot â€” this script is built from
 community knowledge of how it behaves, but I have no way to test it
 myself (no League client running in my environment). The first run
 should be treated as a test: watch the console output, and if a step
@@ -71,6 +71,18 @@ function Invoke-Lcu($conn, $path) {
   }
 }
 
+# The client leaves objective counters out of the payload entirely when they're zero, so a
+# missing field means "none taken" rather than "unknown" â€” coerce both to 0 instead of letting
+# a null reach Firestore, which would reject the write.
+function ConvertTo-FirestoreInt($value) {
+  if ($null -eq $value) { return @{ integerValue = "0" } }
+  return @{ integerValue = [string][int]$value }
+}
+
+function ConvertTo-FirestoreBool($value) {
+  return @{ booleanValue = [bool]$value }
+}
+
 function Send-CustomGameToFirestore($gameId, $matchData) {
   # Pull the current roster so we can match participants by Riot ID.
   $peopleResp = Invoke-RestMethod -Uri "$FirestoreBase/people"
@@ -118,8 +130,37 @@ function Send-CustomGameToFirestore($gameId, $matchData) {
           assists           = @{ integerValue = [string]$p.stats.assists }
           win               = @{ booleanValue = [bool]$p.stats.win }
           teamId            = @{ integerValue = [string]$p.teamId }
+          damageToChampions = ConvertTo-FirestoreInt $p.stats.totalDamageDealtToChampions
+          damageTaken       = ConvertTo-FirestoreInt $p.stats.totalDamageTaken
+          goldEarned        = ConvertTo-FirestoreInt $p.stats.goldEarned
+          cs                = ConvertTo-FirestoreInt ([int]$p.stats.totalMinionsKilled + [int]$p.stats.neutralMinionsKilled)
+          visionScore       = ConvertTo-FirestoreInt $p.stats.visionScore
           matchedPersonId   = if ($matchedPerson) { @{ stringValue = $matchedPerson.Id } } else { @{ nullValue = $null } }
           matchedPersonName = if ($matchedPerson) { @{ stringValue = $matchedPerson.Name } } else { @{ nullValue = $null } }
+        }
+      }
+    }
+  }
+
+  # Objective control: who took what, per side. The scoreboard already tells you who won â€”
+  # this tells you how, which is the half you can actually practise.
+  $teamFields = @()
+  foreach ($t in $matchData.teams) {
+    $teamFields += @{
+      mapValue = @{
+        fields = @{
+          teamId          = ConvertTo-FirestoreInt  $t.teamId
+          firstBlood      = ConvertTo-FirestoreBool $t.firstBlood
+          firstTower      = ConvertTo-FirestoreBool $t.firstTower
+          firstInhibitor  = ConvertTo-FirestoreBool $t.firstInhibitor
+          firstBaron      = ConvertTo-FirestoreBool $t.firstBaron
+          firstDragon     = ConvertTo-FirestoreBool $t.firstDragon
+          firstRiftHerald = ConvertTo-FirestoreBool $t.firstRiftHerald
+          towerKills      = ConvertTo-FirestoreInt  $t.towerKills
+          inhibitorKills  = ConvertTo-FirestoreInt  $t.inhibitorKills
+          baronKills      = ConvertTo-FirestoreInt  $t.baronKills
+          dragonKills     = ConvertTo-FirestoreInt  $t.dragonKills
+          riftHeraldKills = ConvertTo-FirestoreInt  $t.riftHeraldKills
         }
       }
     }
@@ -131,6 +172,7 @@ function Send-CustomGameToFirestore($gameId, $matchData) {
       capturedAt          = @{ timestampValue = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") }
       gameDurationSeconds = @{ integerValue = [string]$matchData.gameDuration }
       participants        = @{ arrayValue = @{ values = $participantFields } }
+      teams               = @{ arrayValue = @{ values = $teamFields } }
     }
   } | ConvertTo-Json -Depth 20
 
@@ -183,7 +225,7 @@ while ($true) {
 
     # queueId 0 = custom game. If this isn't 0 skip it (customs-only logging).
     if ($capturedQueueId -ne 0) {
-      Write-Log "Not a custom game (queueId=$capturedQueueId) — skipping, this is already covered by the Matches/Stats tabs."
+      Write-Log "Not a custom game (queueId=$capturedQueueId) â€” skipping, this is already covered by the Matches/Stats tabs."
       $loggedGameIds[[string]$capturedGameId] = $true
       Start-Sleep -Seconds $PollSeconds
       continue
@@ -193,7 +235,7 @@ while ($true) {
     if (-not $matchData -or -not $matchData.participants) {
       Write-Log "Could not read match history for gameId=$capturedGameId. Raw response:"
       Write-Log ($matchData | ConvertTo-Json -Depth 6 -Compress)
-      Write-Log "This likely means the LCU endpoint/field names differ from what this script expects — please report this output."
+      Write-Log "This likely means the LCU endpoint/field names differ from what this script expects â€” please report this output."
       Start-Sleep -Seconds $PollSeconds
       continue
     }

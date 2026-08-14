@@ -430,7 +430,36 @@ h3 {
   border-color: var(--accent);
 }
 
-.champ-icon .role-select,
+.champ-icon .role-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.champ-icon .role-chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.58rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 3px;
+}
+
+.champ-icon .role-chip:hover {
+  border-color: var(--text-dim);
+}
+
+.champ-icon .role-chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+
 .champ-icon .tier-select {
   width: 100%;
   font-size: 0.65rem;
@@ -1338,8 +1367,17 @@ h3 {
 .custom-game-participant {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   font-size: 0.85rem;
+}
+
+.custom-game-participant .participant-stats {
+  flex-basis: 100%;
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  margin-top: -4px;
+  padding-left: 36px; /* clear the 28px champion icon + 8px gap, aligning under the name */
 }
 
 .custom-game-participant img {
@@ -1991,6 +2029,154 @@ h3 {
   font-size: 0.9rem;
   font-weight: 600;
   margin-bottom: 10px;
+}
+
+.customs-summary:not(:empty) {
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+
+.customs-summary .draft-record-line {
+  margin-bottom: 0;
+}
+
+.attendance-section {
+  margin-top: 22px;
+}
+
+.attendance-sub {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  margin: 0 0 10px;
+}
+
+.attendance-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.attendance-row {
+  align-items: center;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  gap: 10px;
+  padding: 8px 12px;
+}
+
+.attendance-name {
+  flex: 0 0 140px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attendance-bar {
+  background: var(--bg-panel);
+  border-radius: 999px;
+  flex: 1 1 auto;
+  height: 8px;
+  min-width: 60px;
+  overflow: hidden;
+}
+
+.attendance-bar-fill {
+  background: var(--accent);
+  height: 100%;
+}
+
+.attendance-bar-fill.low {
+  background: var(--danger);
+}
+
+.attendance-count {
+  color: var(--text-dim);
+  flex: 0 0 auto;
+  font-size: 0.85rem;
+}
+
+.attendance-streak {
+  background: rgba(220, 80, 80, 0.15);
+  border-radius: 4px;
+  color: var(--danger);
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 2px 6px;
+}
+
+.game-review {
+  border-top: 1px solid var(--border);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.game-review-heading {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.game-review-list:not(:empty) {
+  margin-bottom: 10px;
+}
+
+.game-review-form textarea {
+  min-height: 56px;
+}
+
+.customs-objectives-empty {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  margin-top: 8px;
+}
+
+.customs-objectives-heading {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 12px 0 8px;
+}
+
+.customs-objective-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px;
+}
+
+.customs-objective-stat {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.customs-objective-label {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+.customs-objective-value {
+  color: var(--gold-bright);
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin: 2px 0;
+}
+
+.customs-objective-sub {
+  color: var(--text-dim);
+  font-size: 0.7rem;
 }
 
 .draft-record-columns {

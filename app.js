@@ -71,6 +71,7 @@ function strategyDoc(id) {
 }
 
 const ROLES = ["Top", "Jungle", "Mid", "ADC", "Support", "Fill"];
+const ROLE_SHORT = { Top: "TOP", Jungle: "JG", Mid: "MID", ADC: "ADC", Support: "SUP", Fill: "FILL" };
 const COMP_ROLES = ["Top", "Jungle", "Mid", "ADC", "Support"];
 const TIERS = ["S", "A", "B", "C"];
 const UI_STORAGE_KEY = "championPoolManager.ui.v1";
@@ -174,7 +175,6 @@ const COMMON_ROLES = {
 const CLASSES = ["Fighter", "Tank", "Mage", "Assassin", "Support", "Marksman"];
 
 const DEFAULT_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
-const TIMEZONES = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : [DEFAULT_TIMEZONE];
 
 let state = {
   people: [], // populated live from Firestore's "people" collection — shared across everyone
@@ -211,6 +211,7 @@ let statsLoadingId = null; // person id currently fetching stats, or null
 let customGames = []; // populated live from Firestore's "customGames" collection — written by the local logger script
 
 let notes = []; // populated live from Firestore's "notes" collection — shared across everyone
+let gameReviews = []; // review notes pinned to one logged custom — "notes" docs of type "gameReview"
 let draftState = { blueTeamName: "Blue Team", redTeamName: "Red Team", actions: [] }; // shared live draft
 let draftChampionSearch = ""; // search text for the draft champion picker
 
@@ -416,12 +417,12 @@ function cacheEls() {
   els.newEventTitle = document.getElementById("newEventTitle");
   els.newEventDate = document.getElementById("newEventDate");
   els.newEventTime = document.getElementById("newEventTime");
-  els.newEventTimezone = document.getElementById("newEventTimezone");
   els.newEventNotes = document.getElementById("newEventNotes");
   els.calendarMonthLabel = document.getElementById("calendarMonthLabel");
   els.prevMonthBtn = document.getElementById("prevMonthBtn");
   els.nextMonthBtn = document.getElementById("nextMonthBtn");
   els.calendarGrid = document.getElementById("calendarGrid");
+  els.attendanceSection = document.getElementById("attendanceSection");
   els.dayDetailPanel = document.getElementById("dayDetailPanel");
   els.dayDetailTitle = document.getElementById("dayDetailTitle");
   els.dayDetailEvents = document.getElementById("dayDetailEvents");
@@ -446,6 +447,7 @@ function cacheEls() {
   els.statsSummarySection = document.getElementById("statsSummarySection");
   els.statsRolesSection = document.getElementById("statsRolesSection");
   els.statsChampionsSection = document.getElementById("statsChampionsSection");
+  els.customsSummary = document.getElementById("customsSummary");
   els.customGamesList = document.getElementById("customGamesList");
   els.notesPersonSelect = document.getElementById("notesPersonSelect");
   els.noPersonSelectedNotes = document.getElementById("noPersonSelectedNotes");
@@ -514,23 +516,16 @@ function bindStaticEvents() {
   renderFilterChips(els.laneFilterChips, LANES, laneFilters);
   renderFilterChips(els.classFilterChips, CLASSES, classFilters);
 
-  TIMEZONES.forEach((tz) => {
-    const opt = document.createElement("option");
-    opt.value = tz;
-    opt.textContent = tz;
-    els.newEventTimezone.appendChild(opt);
-  });
-  els.newEventTimezone.value = DEFAULT_TIMEZONE;
-
   els.addEventForm.addEventListener("submit", (e) => {
     e.preventDefault();
     const title = els.newEventTitle.value.trim();
     const date = els.newEventDate.value;
     if (!title || !date) return;
     const time = els.newEventTime.value;
-    const timezone = els.newEventTimezone.value || DEFAULT_TIMEZONE;
     const notes = els.newEventNotes.value.trim();
-    addEvent(title, date, time, timezone, notes);
+    // Times are entered in whatever zone the author's machine is in — no picker. The zone is
+    // stored with the event so other people's browsers can shift it to their own clock.
+    addEvent(title, date, time, DEFAULT_TIMEZONE, notes);
     els.newEventTitle.value = "";
     els.newEventTime.value = "";
     els.newEventNotes.value = "";
@@ -748,10 +743,12 @@ function handleNotesSnapshot(snapshot) {
   notes = all.filter((n) => n.type === "player" || n.type === "draft");
   strategies = all.filter((n) => n.type === "strategy");
   draftResults = all.filter((n) => n.type === "draftResult");
+  gameReviews = all.filter((n) => n.type === "gameReview");
 
   renderNotesTab();
   renderStrategyTab();
   renderDraftHistory();
+  renderCustomsTab();
 }
 
 function handleDraftStateSnapshot(snapshot) {
@@ -936,6 +933,29 @@ function updatePoolEntry(person, championId, changes) {
   savePool(person, nextPool);
 }
 
+// Pool entries used to carry a single `role`; they now carry several in `roles`. Every reader
+// goes through here so pools written before the change keep working — there is no migration
+// pass, an old entry just reads as a one-role list until someone edits it.
+function entryRoles(entry) {
+  if (Array.isArray(entry.roles)) return entry.roles;
+  return entry.role ? [entry.role] : [];
+}
+
+function entryHasRole(entry, role) {
+  return entryRoles(entry).includes(role);
+}
+
+function toggleEntryRole(person, entry, role) {
+  const current = entryRoles(entry);
+  const next = current.includes(role) ? current.filter((r) => r !== role) : [...current, role];
+  // Store in ROLES order rather than click order, so two people who picked the same roles get
+  // the same array and the UI reads consistently.
+  const ordered = ROLES.filter((r) => next.includes(r));
+  // `role` is kept in sync with the first entry: an older client still open in another tab
+  // reads a sensible single value instead of undefined.
+  updatePoolEntry(person, entry.championId, { roles: ordered, role: ordered[0] || null });
+}
+
 /* ---------- Events ---------- */
 
 async function addEvent(title, date, time, timezone, notes) {
@@ -1041,6 +1061,24 @@ async function addNote(type, personId, author, text) {
   } catch (err) {
     console.error(err);
     alert("Could not add that note — check your connection and try again.");
+  }
+}
+
+// Pinned to the custom game's document id, which the logger sets to the Riot gameId — so a
+// review survives re-logging the same game and never drifts onto a different one.
+async function addGameReview(gameId, author, text) {
+  const id = crypto.randomUUID();
+  try {
+    await setDoc(noteDoc(id), {
+      type: "gameReview",
+      gameId,
+      author: author || null,
+      text,
+      createdAt: new Date(),
+    });
+  } catch (err) {
+    console.error(err);
+    alert("Could not save that review note — check your connection and try again.");
   }
 }
 
@@ -1580,22 +1618,23 @@ function renderPersonPoolGrid(person) {
       updatePoolEntry(person, entry.championId, { tier: newTier });
     });
 
-    const roleSelect = document.createElement("select");
-    roleSelect.className = "role-select";
-    const noneOpt = document.createElement("option");
-    noneOpt.value = "";
-    noneOpt.textContent = "No role";
-    roleSelect.appendChild(noneOpt);
+    // A dropdown can only say one thing. Flex picks are the whole point of a pool, so the roles
+    // are toggle chips instead — a champion can be marked Top and Mid at once.
+    const roleChips = document.createElement("div");
+    roleChips.className = "role-chips";
+    roleChips.addEventListener("click", (e) => e.stopPropagation());
     ROLES.forEach((role) => {
-      const opt = document.createElement("option");
-      opt.value = role;
-      opt.textContent = role;
-      if (entry.role === role) opt.selected = true;
-      roleSelect.appendChild(opt);
-    });
-    roleSelect.addEventListener("click", (e) => e.stopPropagation());
-    roleSelect.addEventListener("change", () => {
-      updatePoolEntry(person, entry.championId, { role: roleSelect.value || null });
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "role-chip";
+      chip.textContent = ROLE_SHORT[role] || role;
+      chip.title = role;
+      if (entryHasRole(entry, role)) chip.classList.add("active");
+      chip.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleEntryRole(person, entry, role);
+      });
+      roleChips.appendChild(chip);
     });
 
     const removeBtn = document.createElement("button");
@@ -1608,7 +1647,7 @@ function renderPersonPoolGrid(person) {
       savePool(person, nextPool);
     });
 
-    node.append(tierSelect, roleSelect, removeBtn);
+    node.append(tierSelect, roleChips, removeBtn);
     els.poolGrid.appendChild(node);
   });
 }
@@ -1638,7 +1677,7 @@ function toggleChampionInPool(person, championId) {
   const nextPool =
     idx >= 0
       ? person.pool.filter((p) => p.championId !== championId)
-      : [...person.pool, { championId, role: null, tier: null }];
+      : [...person.pool, { championId, roles: [], role: null, tier: null }];
   savePool(person, nextPool);
 }
 
@@ -1677,7 +1716,7 @@ function renderOverviewTab() {
 
   const coreRoles = ["Top", "Jungle", "Mid", "ADC", "Support"];
   coreRoles.forEach((role) => {
-    const hasCoverage = state.people.some((p) => p.pool.some((entry) => entry.role === role));
+    const hasCoverage = state.people.some((p) => p.pool.some((entry) => entryHasRole(entry, role)));
     if (!hasCoverage) {
       const chip = document.createElement("div");
       chip.className = "warning-chip";
@@ -1699,7 +1738,7 @@ function renderOverviewTab() {
     header.textContent = person.name;
     card.appendChild(header);
 
-    const rolesWithChamps = ROLES.filter((role) => person.pool.some((entry) => entry.role === role));
+    const rolesWithChamps = ROLES.filter((role) => person.pool.some((entry) => entryHasRole(entry, role)));
 
     if (rolesWithChamps.length === 0) {
       const empty = document.createElement("p");
@@ -1719,7 +1758,9 @@ function renderOverviewTab() {
         const wrap = document.createElement("div");
         wrap.className = "role-champs";
 
-        const champsForRole = person.pool.filter((entry) => entry.role === role);
+        // A flex pick appears under every role it's marked for, which is the point — the same
+        // champion genuinely is part of the Top pool and the Mid pool.
+        const champsForRole = person.pool.filter((entry) => entryHasRole(entry, role));
         [...champsForRole]
           .sort((a, b) => tierRank(a.tier) - tierRank(b.tier))
           .forEach((entry) => {
@@ -1785,23 +1826,26 @@ function flexAnalysis() {
 
       const lanes = COMMON_ROLES[entry.championId] || [];
       if (lanes.length > 1) {
-        twoRoleChampions.push({ champ, lanes, person, tier: entry.tier, assignedRole: entry.role || null });
+        twoRoleChampions.push({ champ, lanes, person, tier: entry.tier, assignedRoles: entryRoles(entry) });
       }
 
       if (!sharedChampions.has(entry.championId)) sharedChampions.set(entry.championId, { champ, people: [] });
-      sharedChampions.get(entry.championId).people.push({ person, tier: entry.tier, role: entry.role || null });
+      sharedChampions.get(entry.championId).people.push({ person, tier: entry.tier, roles: entryRoles(entry) });
     });
   });
 
-  // A role someone "can play" is inferred from the champions they rate highly, not only from
-  // the role dropdown — everyone here marks their whole pool with one role, so the dropdown
-  // alone would say nobody can move, which is not what the pools show.
+  // A role someone "can play" comes from what they marked, when they marked anything: now that
+  // an entry can carry several roles, an explicit assignment is a stated intention and beats a
+  // guess. Pools where nothing is marked still fall back to inferring the role from the
+  // champion, otherwise this would say nobody can move.
   const movablePlayers = withPools
     .map((person) => {
       const picks = topPicks(person);
+      const anyAssigned = picks.some((e) => entryRoles(e).length > 0);
+      const rolesOf = (entry) => (anyAssigned ? entryRoles(entry) : COMMON_ROLES[entry.championId] || []);
       const roles = COMP_ROLES.map((role) => ({
         role,
-        count: picks.filter((e) => (COMMON_ROLES[e.championId] || []).includes(role)).length,
+        count: picks.filter((e) => rolesOf(e).includes(role)).length,
       })).filter((r) => r.count >= FLEX_ROLE_MIN);
       return { person, roles: roles.sort((a, b) => b.count - a.count) };
     })
@@ -1942,7 +1986,144 @@ function formatTimezoneAbbr(dateStr, tz) {
   }
 }
 
+// What wall-clock time a zone shows at a given instant, expressed as a UTC-interpreted
+// timestamp so it can be subtracted from one. Intl parts rather than a toLocaleString
+// round-trip, because new Date(string) parses in the machine's zone and would cancel the
+// very offset being measured.
+function wallClockAsUtcMs(instant, tz) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    })
+      .formatToParts(instant)
+      .map((p) => [p.type, p.value])
+  );
+  return Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour % 24, +parts.minute, +parts.second);
+}
+
+// An event stores the wall time its author typed plus the author's zone; everyone else's
+// browser shifts it onto their own clock here. Off-by-an-hour is possible in the minutes
+// around a DST switch, an acceptable trade against shipping a timezone database for a
+// scrim calendar.
+function formatEventTimeLocal(ev) {
+  const tz = ev.timezone || DEFAULT_TIMEZONE;
+  try {
+    const naive = Date.parse(`${ev.date}T${ev.time}:00Z`);
+    if (isNaN(naive)) throw new Error("bad date");
+    // The zone's offset at (roughly) that moment, measured by how far the zone's wall clock
+    // sits from UTC; adding it back turns "18:30 on the author's wall" into a real instant.
+    const instant = new Date(naive + (naive - wallClockAsUtcMs(new Date(naive), tz)));
+
+    let label = instant.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+    // Shifting zones can cross midnight — flag it, or "11:30 PM" on the wrong square reads as a typo.
+    if (formatDateKey(instant) !== ev.date) {
+      label += ` (${instant.toLocaleDateString(undefined, { month: "short", day: "numeric" })})`;
+    }
+    return label;
+  } catch {
+    return `${formatTime(ev.time)} ${formatTimezoneAbbr(ev.date, tz)}`;
+  }
+}
+
+// Scrim teams die of attendance, not of draft. The calendar records who ticked the box for an
+// event; nobody ever reads back who stopped ticking it. Only events already in the past count —
+// an upcoming Saturday nobody has confirmed yet is not a no-show.
+function attendanceHistory() {
+  const todayKey = formatDateKey(new Date());
+  const past = events
+    .filter((ev) => ev.date && ev.date < todayKey)
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  const rows = state.people.map((person) => {
+    const attended = past.filter((ev) => (ev.attendees || []).includes(person.id)).length;
+
+    // Consecutive misses counting back from the most recent event. A season-long average hides
+    // someone who came to everything in April and nothing since; this is the number that
+    // actually predicts whether they'll turn up on Saturday.
+    let missStreak = 0;
+    for (let i = past.length - 1; i >= 0; i--) {
+      if ((past[i].attendees || []).includes(person.id)) break;
+      missStreak++;
+    }
+
+    return { person, attended, total: past.length, rate: past.length ? attended / past.length : 0, missStreak };
+  });
+
+  rows.sort((a, b) => a.rate - b.rate || a.person.name.localeCompare(b.person.name));
+  return { past, rows };
+}
+
+function renderAttendanceSection() {
+  els.attendanceSection.innerHTML = "";
+  if (state.people.length === 0) return;
+
+  const { past, rows } = attendanceHistory();
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Attendance";
+  els.attendanceSection.appendChild(heading);
+
+  if (past.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "No past events yet — attendance shows up once an event date has gone by.";
+    els.attendanceSection.appendChild(empty);
+    return;
+  }
+
+  const sub = document.createElement("p");
+  sub.className = "attendance-sub";
+  sub.textContent = `Across ${past.length} past event${past.length === 1 ? "" : "s"} · lowest turnout first`;
+  els.attendanceSection.appendChild(sub);
+
+  const list = document.createElement("div");
+  list.className = "attendance-list";
+
+  rows.forEach((row) => {
+    const item = document.createElement("div");
+    item.className = "attendance-row";
+
+    const name = document.createElement("div");
+    name.className = "attendance-name";
+    name.textContent = row.person.name;
+
+    const bar = document.createElement("div");
+    bar.className = "attendance-bar";
+    const fill = document.createElement("div");
+    fill.className = "attendance-bar-fill";
+    fill.style.width = `${Math.round(row.rate * 100)}%`;
+    if (row.rate < 0.5) fill.classList.add("low");
+    bar.appendChild(fill);
+
+    const count = document.createElement("div");
+    count.className = "attendance-count";
+    count.textContent = `${row.attended}/${row.total} (${Math.round(row.rate * 100)}%)`;
+
+    item.append(name, bar, count);
+
+    if (row.missStreak >= 2) {
+      const streak = document.createElement("span");
+      streak.className = "attendance-streak";
+      streak.textContent = `missed last ${row.missStreak}`;
+      item.appendChild(streak);
+    }
+
+    list.appendChild(item);
+  });
+
+  els.attendanceSection.appendChild(list);
+}
+
 function renderCalendarTab() {
+  renderAttendanceSection();
+
   const year = calendarViewDate.getFullYear();
   const month = calendarViewDate.getMonth();
   els.calendarMonthLabel.textContent = calendarViewDate.toLocaleDateString(undefined, {
@@ -2055,8 +2236,7 @@ function buildEventDisplayCard(ev) {
   const header = document.createElement("div");
   header.className = "event-card-header";
   const titleEl = document.createElement("strong");
-  const tzAbbr = formatTimezoneAbbr(ev.date, ev.timezone || DEFAULT_TIMEZONE);
-  titleEl.textContent = ev.time ? `${formatTime(ev.time)} ${tzAbbr} — ${ev.title}` : ev.title;
+  titleEl.textContent = ev.time ? `${formatEventTimeLocal(ev)} — ${ev.title}` : ev.title;
 
   const actions = document.createElement("div");
   actions.className = "event-card-actions";
@@ -2145,16 +2325,6 @@ function buildEventEditForm(ev) {
   timeInput.value = eventDraft.time;
   timeInput.addEventListener("input", () => (eventDraft.time = timeInput.value));
 
-  const tzSelect = document.createElement("select");
-  TIMEZONES.forEach((tz) => {
-    const opt = document.createElement("option");
-    opt.value = tz;
-    opt.textContent = tz;
-    if (tz === eventDraft.timezone) opt.selected = true;
-    tzSelect.appendChild(opt);
-  });
-  tzSelect.addEventListener("change", () => (eventDraft.timezone = tzSelect.value));
-
   const notesInput = document.createElement("input");
   notesInput.type = "text";
   notesInput.placeholder = "Notes (optional)";
@@ -2188,7 +2358,9 @@ function buildEventEditForm(ev) {
       title,
       date,
       time: eventDraft.time || null,
-      timezone: eventDraft.timezone || DEFAULT_TIMEZONE,
+      // Retyping the time means the editor meant it in their own zone; leaving it alone keeps
+      // the original author's zone, so a title fix in another timezone can't shift the event.
+      timezone: eventDraft.time !== (ev.time || "") ? DEFAULT_TIMEZONE : eventDraft.timezone || DEFAULT_TIMEZONE,
       notes: eventDraft.notes.trim() || null,
     };
     selectedCalendarDate = date;
@@ -2198,7 +2370,7 @@ function buildEventEditForm(ev) {
     updateEvent(ev.id, changes);
   });
 
-  form.append(titleInput, dateInput, timeInput, tzSelect, notesInput, actions);
+  form.append(titleInput, dateInput, timeInput, notesInput, actions);
   card.appendChild(form);
   return card;
 }
@@ -2789,6 +2961,13 @@ function renderStatsChampions(cached) {
 /* ---------- Custom games (logged by the local companion script) ---------- */
 
 function renderCustomsTab() {
+  // Notes are shared live, so someone else's review arriving mid-sentence would otherwise
+  // rebuild the list and wipe what you're typing. Adding your own note blurs the box first,
+  // so this only skips the redraws that would be destructive.
+  if (document.activeElement?.classList?.contains("game-review-input")) return;
+
+  renderCustomsSummary();
+
   els.customGamesList.innerHTML = "";
   if (customGames.length === 0) {
     els.customGamesList.innerHTML = `<p class="empty-state">No custom games logged yet.</p>`;
@@ -2797,6 +2976,173 @@ function renderCustomsTab() {
   customGames.forEach((game) => {
     els.customGamesList.appendChild(buildCustomGameCard(game));
   });
+}
+
+// Which side "we" were on in a logged custom — whichever side holds the most roster players.
+// In a 5v5 scrim that is unambiguous; a mixed or unrecognised lobby returns null rather than
+// guessing, and every caller skips those games instead of counting them wrong.
+function ourSideOf(game) {
+  const ours = (game.participants || []).filter((p) => p.matchedPersonId);
+  if (ours.length === 0) return null;
+
+  const blueCount = ours.filter((p) => p.teamId === 100).length;
+  const redCount = ours.length - blueCount;
+  if (blueCount === redCount) return null;
+
+  return blueCount > redCount ? "blue" : "red";
+}
+
+function teamIdForSide(side) {
+  return side === "blue" ? 100 : 200;
+}
+
+// Which side we win on, read from the games we actually logged.
+function customsSideRecord() {
+  const record = { blue: { games: 0, wins: 0 }, red: { games: 0, wins: 0 }, skipped: 0 };
+
+  customGames.forEach((game) => {
+    const side = ourSideOf(game);
+    if (!side) {
+      record.skipped++;
+      return;
+    }
+
+    const teamId = teamIdForSide(side);
+    const won = (game.participants || []).some((p) => p.teamId === teamId && p.win);
+    record[side].games++;
+    if (won) record[side].wins++;
+  });
+
+  return record;
+}
+
+// Objective control. Winning is the outcome; taking objectives is the behaviour that produces
+// it, and it's the half a team can actually practise. Only games logged after the logger
+// started recording `teams` carry this, so it counts its own sample separately from the side
+// record rather than silently averaging over games that never had the data.
+const OBJECTIVE_FIRSTS = [
+  { key: "firstBlood", label: "First blood" },
+  { key: "firstTower", label: "First tower" },
+  { key: "firstDragon", label: "First dragon" },
+  { key: "firstRiftHerald", label: "First herald" },
+  { key: "firstBaron", label: "First baron" },
+];
+
+const OBJECTIVE_COUNTS = [
+  { key: "towerKills", label: "Towers" },
+  { key: "dragonKills", label: "Dragons" },
+  { key: "baronKills", label: "Barons" },
+];
+
+function customsObjectiveRecord() {
+  const firsts = {};
+  OBJECTIVE_FIRSTS.forEach((o) => (firsts[o.key] = 0));
+  const counts = {};
+  OBJECTIVE_COUNTS.forEach((o) => (counts[o.key] = { ours: 0, theirs: 0 }));
+  let games = 0;
+
+  customGames.forEach((game) => {
+    const side = ourSideOf(game);
+    if (!side || !Array.isArray(game.teams) || game.teams.length === 0) return;
+
+    const ourTeamId = teamIdForSide(side);
+    const ourTeam = game.teams.find((t) => t.teamId === ourTeamId);
+    const theirTeam = game.teams.find((t) => t.teamId !== ourTeamId);
+    if (!ourTeam) return;
+
+    games++;
+    OBJECTIVE_FIRSTS.forEach((o) => {
+      if (ourTeam[o.key]) firsts[o.key]++;
+    });
+    OBJECTIVE_COUNTS.forEach((o) => {
+      counts[o.key].ours += ourTeam[o.key] || 0;
+      counts[o.key].theirs += theirTeam?.[o.key] || 0;
+    });
+  });
+
+  return { games, firsts, counts };
+}
+
+function renderCustomsSummary() {
+  els.customsSummary.innerHTML = "";
+  if (customGames.length === 0) return;
+
+  const record = customsSideRecord();
+  const total = record.blue.games + record.red.games;
+  if (total === 0) return;
+
+  const wins = record.blue.wins + record.red.wins;
+  const rate = (r) => (r.games ? Math.round((r.wins / r.games) * 100) : 0);
+
+  const line = document.createElement("div");
+  line.className = "draft-record-line";
+  line.textContent =
+    `${wins}W-${total - wins}L across ${total} logged custom${total === 1 ? "" : "s"} · ` +
+    `blue ${record.blue.wins}/${record.blue.games} (${rate(record.blue)}%) · ` +
+    `red ${record.red.wins}/${record.red.games} (${rate(record.red)}%)` +
+    (record.skipped ? ` · ${record.skipped} skipped (no roster player, or players on both sides)` : "");
+  els.customsSummary.appendChild(line);
+
+  renderCustomsObjectives();
+}
+
+function renderCustomsObjectives() {
+  const record = customsObjectiveRecord();
+  if (record.games === 0) {
+    // Every logged game predates objective capture. Say so plainly, so an empty section reads
+    // as "not recorded yet" rather than "your team never takes an objective".
+    const hint = document.createElement("div");
+    hint.className = "customs-objectives-empty";
+    hint.textContent =
+      "Objective control isn't recorded for these games — re-run custom-game-logger.ps1 and it'll appear for games logged from now on.";
+    els.customsSummary.appendChild(hint);
+    return;
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "customs-objectives";
+
+  const heading = document.createElement("div");
+  heading.className = "customs-objectives-heading";
+  heading.textContent = `Objective control · ${record.games} game${record.games === 1 ? "" : "s"}`;
+  wrap.appendChild(heading);
+
+  const grid = document.createElement("div");
+  grid.className = "customs-objective-grid";
+
+  OBJECTIVE_FIRSTS.forEach((o) => {
+    const pct = Math.round((record.firsts[o.key] / record.games) * 100);
+    grid.appendChild(buildObjectiveStat(o.label, `${pct}%`, `${record.firsts[o.key]}/${record.games}`));
+  });
+
+  OBJECTIVE_COUNTS.forEach((o) => {
+    const { ours, theirs } = record.counts[o.key];
+    const per = (n) => (n / record.games).toFixed(1);
+    grid.appendChild(buildObjectiveStat(o.label, `${per(ours)} vs ${per(theirs)}`, "per game, us vs them"));
+  });
+
+  wrap.appendChild(grid);
+  els.customsSummary.appendChild(wrap);
+}
+
+function buildObjectiveStat(label, value, sub) {
+  const cell = document.createElement("div");
+  cell.className = "customs-objective-stat";
+
+  const labelEl = document.createElement("div");
+  labelEl.className = "customs-objective-label";
+  labelEl.textContent = label;
+
+  const valueEl = document.createElement("div");
+  valueEl.className = "customs-objective-value";
+  valueEl.textContent = value;
+
+  const subEl = document.createElement("div");
+  subEl.className = "customs-objective-sub";
+  subEl.textContent = sub;
+
+  cell.append(labelEl, valueEl, subEl);
+  return cell;
 }
 
 function buildCustomGameCard(game) {
@@ -2818,15 +3164,104 @@ function buildCustomGameCard(game) {
 
   const teamsWrap = document.createElement("div");
   teamsWrap.className = "custom-game-teams";
-  teamsWrap.append(buildCustomGameTeam("Blue Side", blueSide), buildCustomGameTeam("Red Side", redSide));
+  teamsWrap.append(buildCustomGameTeam("Blue Side", blueSide, game), buildCustomGameTeam("Red Side", redSide, game));
   card.appendChild(teamsWrap);
+
+  card.appendChild(buildGameReviewSection(game));
 
   return card;
 }
 
-function buildCustomGameTeam(label, participants) {
+// VOD review wants "14:20 dragon" attached to the game it happened in. The Notes tab is
+// free-floating text about a player; this is text about one game, so it hangs off the card.
+function buildGameReviewSection(game) {
+  const wrap = document.createElement("div");
+  wrap.className = "game-review";
+
+  const mine = gameReviews.filter((r) => r.gameId === game.id);
+
+  const heading = document.createElement("div");
+  heading.className = "game-review-heading";
+  heading.textContent = mine.length ? `Review notes (${mine.length})` : "Review notes";
+  wrap.appendChild(heading);
+
+  const list = document.createElement("div");
+  list.className = "game-review-list";
+  mine.forEach((review) => list.appendChild(buildGameReviewCard(review)));
+  wrap.appendChild(list);
+
+  const form = document.createElement("form");
+  form.className = "add-note-form game-review-form";
+
+  const input = document.createElement("textarea");
+  input.className = "game-review-input";
+  input.placeholder = "What happened, and what should we do differently? e.g. \"14:20 dragon — no vision, forced anyway\"";
+  input.required = true;
+
+  const row = document.createElement("div");
+  row.className = "add-note-form-row";
+  const author = document.createElement("input");
+  author.type = "text";
+  author.placeholder = "Your name (optional)";
+  author.autocomplete = "off";
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.textContent = "Add Review";
+  row.append(author, submit);
+
+  form.append(input, row);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    // Clear and blur before awaiting, so the snapshot that follows is free to redraw.
+    input.value = "";
+    input.blur();
+    await addGameReview(game.id, author.value.trim(), text);
+  });
+
+  wrap.appendChild(form);
+  return wrap;
+}
+
+function buildGameReviewCard(review) {
+  const card = document.createElement("div");
+  card.className = "note-card";
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "remove-note";
+  deleteBtn.textContent = "×";
+  deleteBtn.title = "Delete review note";
+  deleteBtn.addEventListener("click", () => {
+    if (confirm("Delete this review note?")) deleteNote(review.id);
+  });
+
+  const header = document.createElement("div");
+  header.className = "note-card-header";
+  const authorEl = document.createElement("span");
+  authorEl.className = "note-card-author";
+  authorEl.textContent = review.author || "Anonymous";
+  const time = document.createElement("span");
+  time.className = "note-card-time";
+  time.textContent = review.createdAt?.toMillis ? formatRelativeTime(review.createdAt.toMillis()) : "";
+  header.append(authorEl, time);
+
+  const text = document.createElement("div");
+  text.className = "note-card-text";
+  text.textContent = review.text;
+
+  card.append(deleteBtn, header, text);
+  return card;
+}
+
+function buildCustomGameTeam(label, participants, game) {
   const wrap = document.createElement("div");
   wrap.className = "custom-game-team";
+
+  // Damage share needs the team total, CS/min needs the clock; both computed once per side.
+  const teamDamage = participants.reduce((sum, p) => sum + (p.damageToChampions || 0), 0);
+  const minutes = game?.gameDurationSeconds ? game.gameDurationSeconds / 60 : 0;
 
   const won = participants.length > 0 && participants[0].win;
   const labelEl = document.createElement("div");
@@ -2853,6 +3288,21 @@ function buildCustomGameTeam(label, participants) {
     kda.textContent = `${p.kills}/${p.deaths}/${p.assists}`;
 
     row.append(img, name, kda);
+
+    // Games logged before the logger captured performance stats simply don't get the line —
+    // KDA alone is what that game actually recorded.
+    if (p.damageToChampions != null) {
+      const fmtK = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n ?? 0));
+      const share = teamDamage ? Math.round((p.damageToChampions / teamDamage) * 100) : 0;
+      const csRate = minutes ? ` (${((p.cs || 0) / minutes).toFixed(1)}/m)` : "";
+      const stats = document.createElement("div");
+      stats.className = "participant-stats";
+      stats.textContent =
+        `${fmtK(p.damageToChampions)} dmg (${share}%) · ${p.cs || 0} CS${csRate} · ` +
+        `${fmtK(p.goldEarned)} gold · ${p.visionScore || 0} vis`;
+      row.appendChild(stats);
+    }
+
     wrap.appendChild(row);
   });
 
