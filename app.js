@@ -406,6 +406,7 @@ function cacheEls() {
   els.classFilterChips = document.getElementById("classFilterChips");
   els.coverageWarnings = document.getElementById("coverageWarnings");
   els.coverageTable = document.getElementById("coverageTable");
+  els.flexSection = document.getElementById("flexSection");
   els.championIconTemplate = document.getElementById("championIconTemplate");
   els.addEventForm = document.getElementById("addEventForm");
   els.newEventTitle = document.getElementById("newEventTitle");
@@ -1567,6 +1568,7 @@ function buildChampIcon(champ) {
 function renderOverviewTab() {
   els.coverageWarnings.innerHTML = "";
   els.coverageTable.innerHTML = "";
+  renderFlexSection();
 
   if (state.people.length === 0) {
     els.coverageTable.innerHTML = `<p class="empty-state">Add players to see role coverage.</p>`;
@@ -1655,6 +1657,165 @@ function renderOverviewTab() {
 }
 
 /* ---------- Rendering: Calendar tab ---------- */
+
+/* ---------- Rendering: Draft flex ---------- */
+
+// Three separate ways a pool hides information during a draft. They are different weapons:
+// a two-role champion hides *what lane*, a movable player hides *who plays where*, and a
+// shared champion hides *which of you* is on it. Each is computed from pools alone — no
+// Riot requests, so this is free to keep up to date.
+// Pools here run to 40-70 champions each, so every one of these lists is filtered to the
+// picks someone would actually lock in — S and A tier. Unfiltered, all three become walls
+// of every champion in the game and say nothing.
+const FLEX_TIERS = ["S", "A"];
+const FLEX_ROLE_MIN = 2; // champions in a role before it counts as a role they can play
+const FLEX_SHARED_LIMIT = 12;
+
+function flexAnalysis() {
+  const withPools = state.people.filter((p) => (p.pool || []).length > 0);
+  const topPicks = (person) => (person.pool || []).filter((e) => FLEX_TIERS.includes(e.tier));
+
+  const twoRoleChampions = [];
+  const sharedChampions = new Map();
+
+  withPools.forEach((person) => {
+    topPicks(person).forEach((entry) => {
+      const champ = championsById[entry.championId];
+      if (!champ) return;
+
+      const lanes = COMMON_ROLES[entry.championId] || [];
+      if (lanes.length > 1) {
+        twoRoleChampions.push({ champ, lanes, person, tier: entry.tier, assignedRole: entry.role || null });
+      }
+
+      if (!sharedChampions.has(entry.championId)) sharedChampions.set(entry.championId, { champ, people: [] });
+      sharedChampions.get(entry.championId).people.push({ person, tier: entry.tier, role: entry.role || null });
+    });
+  });
+
+  // A role someone "can play" is inferred from the champions they rate highly, not only from
+  // the role dropdown — everyone here marks their whole pool with one role, so the dropdown
+  // alone would say nobody can move, which is not what the pools show.
+  const movablePlayers = withPools
+    .map((person) => {
+      const picks = topPicks(person);
+      const roles = COMP_ROLES.map((role) => ({
+        role,
+        count: picks.filter((e) => (COMMON_ROLES[e.championId] || []).includes(role)).length,
+      })).filter((r) => r.count >= FLEX_ROLE_MIN);
+      return { person, roles: roles.sort((a, b) => b.count - a.count) };
+    })
+    .filter((p) => p.roles.length > 1)
+    .sort((a, b) => b.roles.length - a.roles.length);
+
+  const shared = [...sharedChampions.values()]
+    .filter((s) => s.people.length > 1)
+    .sort((a, b) => b.people.length - a.people.length || a.champ.name.localeCompare(b.champ.name));
+
+  return { twoRoleChampions: twoRoleChampions.sort((a, b) => a.tier.localeCompare(b.tier)), movablePlayers, shared };
+}
+
+function renderFlexSection() {
+  els.flexSection.innerHTML = "";
+  if (state.people.length === 0) return;
+
+  const { twoRoleChampions, movablePlayers, shared } = flexAnalysis();
+
+  els.flexSection.appendChild(
+    buildFlexBlock(
+      "Champions that hide the lane",
+      "S and A picks playable in more than one role — locking one early does not tell them where it is going.",
+      twoRoleChampions.slice(0, FLEX_SHARED_LIMIT).map((f) => ({
+        champ: f.champ,
+        label: `${f.tier} · ${f.lanes.join(" / ")} · ${f.person.name}`,
+      })),
+      "No two-role champion is rated S or A in anyone's pool yet.",
+      twoRoleChampions.length > FLEX_SHARED_LIMIT
+        ? `+ ${twoRoleChampions.length - FLEX_SHARED_LIMIT} more, S tier shown first`
+        : null
+    )
+  );
+
+  els.flexSection.appendChild(
+    buildFlexBlock(
+      "Players who can move",
+      `Roles covered by at least ${FLEX_ROLE_MIN} of their S/A picks, so the lineup is not fixed before the draft.`,
+      movablePlayers.map((m) => ({
+        label: `${m.person.name} — ${m.roles.map((r) => `${r.role} (${r.count})`).join(", ")}`,
+      })),
+      "No one's top picks span two roles yet."
+    )
+  );
+
+  els.flexSection.appendChild(
+    buildFlexBlock(
+      "Picks more than one of you can play",
+      "Banning it costs them a ban against several of you; picking it hides which of you is on it.",
+      shared.slice(0, FLEX_SHARED_LIMIT).map((s) => ({
+        champ: s.champ,
+        label: s.people.map((p) => `${p.person.name} (${p.tier})`).join(", "),
+      })),
+      "No champion is rated S or A by two of you yet.",
+      shared.length > FLEX_SHARED_LIMIT ? `+ ${shared.length - FLEX_SHARED_LIMIT} more shared picks` : null
+    )
+  );
+}
+
+function buildFlexBlock(title, blurb, rows, emptyText, footnote) {
+  const block = document.createElement("div");
+  block.className = "flex-block";
+
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+  block.appendChild(heading);
+
+  const note = document.createElement("p");
+  note.className = "flex-blurb";
+  note.textContent = blurb;
+  block.appendChild(note);
+
+  if (rows.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = emptyText;
+    block.appendChild(empty);
+    return block;
+  }
+
+  rows.forEach((row) => {
+    const line = document.createElement("div");
+    line.className = "flex-row";
+
+    if (row.champ) {
+      const img = document.createElement("img");
+      img.src = row.champ.image;
+      img.alt = row.champ.name;
+      line.appendChild(img);
+
+      const name = document.createElement("span");
+      name.className = "flex-champ-name";
+      name.textContent = row.champ.name;
+      line.appendChild(name);
+    }
+
+    const label = document.createElement("span");
+    label.className = "flex-label";
+    label.textContent = row.label;
+    line.appendChild(label);
+
+    block.appendChild(line);
+  });
+
+  if (footnote) {
+    const more = document.createElement("p");
+    more.className = "flex-blurb";
+    more.style.marginTop = "8px";
+    more.textContent = footnote;
+    block.appendChild(more);
+  }
+
+  return block;
+}
 
 function formatDateKey(d) {
   const y = d.getFullYear();
