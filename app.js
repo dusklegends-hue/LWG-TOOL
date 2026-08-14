@@ -214,7 +214,11 @@ let notes = []; // populated live from Firestore's "notes" collection — shared
 let draftState = { blueTeamName: "Blue Team", redTeamName: "Red Team", actions: [] }; // shared live draft
 let draftChampionSearch = ""; // search text for the draft champion picker
 
-let strategies = []; // populated live from Firestore's "strategies" collection — shared across everyone
+let draftResults = []; // saved drafts with their outcome — "notes" docs of type "draftResult"
+let draftResultStatusText = "";
+let draftResultStatusIsError = false;
+
+let strategies = []; // populated live from Firestore's "notes" collection under type "strategy"
 let scoutingId = null; // strategy id whose op.gg lobby is being fetched from Riot right now, or null
 let strategyStatusText = ""; // last ask/scout message shown above the list ("" = nothing to say)
 let strategyStatusIsError = false;
@@ -461,6 +465,12 @@ function cacheEls() {
   els.draftTurnLabel = document.getElementById("draftTurnLabel");
   els.undoDraftBtn = document.getElementById("undoDraftBtn");
   els.resetDraftBtn = document.getElementById("resetDraftBtn");
+  els.draftOurSide = document.getElementById("draftOurSide");
+  els.saveDraftWinBtn = document.getElementById("saveDraftWinBtn");
+  els.saveDraftLossBtn = document.getElementById("saveDraftLossBtn");
+  els.draftResultStatus = document.getElementById("draftResultStatus");
+  els.draftHistorySummary = document.getElementById("draftHistorySummary");
+  els.draftHistoryList = document.getElementById("draftHistoryList");
   els.draftChampionSearch = document.getElementById("draftChampionSearch");
   els.draftChampionGrid = document.getElementById("draftChampionGrid");
   els.blueBoardLabel = document.getElementById("blueBoardLabel");
@@ -603,6 +613,9 @@ function bindStaticEvents() {
     renderDraftChampionGrid();
   });
 
+  els.saveDraftWinBtn.addEventListener("click", () => saveDraftResult(els.draftOurSide.value, true));
+  els.saveDraftLossBtn.addEventListener("click", () => saveDraftResult(els.draftOurSide.value, false));
+
   STRATEGY_CATEGORIES.forEach((category) => {
     const opt = document.createElement("option");
     opt.value = category;
@@ -729,13 +742,16 @@ function handleNotesSnapshot(snapshot) {
       return bTime - aTime;
     });
 
-  // One collection, two features: the Notes tab reads "player"/"draft" and the Strategy tab
-  // reads "strategy". Splitting here keeps every renderer downstream unaware of the sharing.
-  notes = all.filter((n) => n.type !== "strategy");
+  // One collection, several features. The Notes tab reads "player" and "draft"; everything
+  // else claims its own type. Splitting here keeps every renderer downstream unaware of the
+  // sharing, which exists because the Firestore rules name collections one by one.
+  notes = all.filter((n) => n.type === "player" || n.type === "draft");
   strategies = all.filter((n) => n.type === "strategy");
+  draftResults = all.filter((n) => n.type === "draftResult");
 
   renderNotesTab();
   renderStrategyTab();
+  renderDraftHistory();
 }
 
 function handleDraftStateSnapshot(snapshot) {
@@ -1035,6 +1051,90 @@ async function deleteNote(id) {
     console.error(err);
     alert("Could not delete that note — check your connection and try again.");
   }
+}
+
+/* ---------- Draft results (the loop from a draft back to whether it worked) ---------- */
+
+// A draft on its own is a plan; a draft with an outcome attached is evidence. Saving one
+// freezes the current board — champions, sides and who we were — so the record survives the
+// next reset. Stored in the notes collection under type "draftResult", like everything else
+// that would otherwise need a new Firestore collection.
+async function saveDraftResult(ourSide, won) {
+  if (draftState.actions.length === 0) {
+    setDraftResultStatus("Nothing to record — the board is empty.", true);
+    return;
+  }
+
+  const id = crypto.randomUUID();
+  try {
+    await setDoc(noteDoc(id), {
+      type: "draftResult",
+      actions: [...draftState.actions],
+      blueTeamName: draftState.blueTeamName,
+      redTeamName: draftState.redTeamName,
+      ourSide,
+      won,
+      complete: draftState.actions.length >= DRAFT_SEQUENCE.length,
+      createdAt: new Date(),
+    });
+    setDraftResultStatus(`Recorded as a ${won ? "win" : "loss"} on ${ourSide}.`, false);
+  } catch (err) {
+    console.error(err);
+    setDraftResultStatus("Could not save that result — check your connection and try again.", true);
+  }
+}
+
+async function deleteDraftResult(id) {
+  try {
+    await deleteDoc(noteDoc(id));
+  } catch (err) {
+    console.error(err);
+    setDraftResultStatus("Could not delete that result.", true);
+  }
+}
+
+function setDraftResultStatus(text, isError) {
+  draftResultStatusText = text;
+  draftResultStatusIsError = Boolean(isError);
+  renderDraftHistory();
+}
+
+// What the saved drafts add up to: our record, our record by side, and which champions show
+// up in wins and losses — ours and theirs.
+function draftResultStats() {
+  const games = draftResults.length;
+  const wins = draftResults.filter((r) => r.won).length;
+  const bySide = { blue: { games: 0, wins: 0 }, red: { games: 0, wins: 0 } };
+  const ours = new Map();
+  const theirs = new Map();
+
+  const bump = (map, championId, won) => {
+    if (!map.has(championId)) map.set(championId, { games: 0, wins: 0 });
+    const row = map.get(championId);
+    row.games++;
+    if (won) row.wins++;
+  };
+
+  draftResults.forEach((result) => {
+    const side = result.ourSide === "red" ? "red" : "blue";
+    bySide[side].games++;
+    if (result.won) bySide[side].wins++;
+
+    const parts = decomposeDraft(result.actions);
+    const ourPicks = side === "blue" ? parts.bluePicks : parts.redPicks;
+    const theirPicks = side === "blue" ? parts.redPicks : parts.bluePicks;
+    ourPicks.forEach((id) => bump(ours, id, result.won));
+    // A champion on the other side is recorded by whether *we* won, so a high number here
+    // means it keeps beating us.
+    theirPicks.forEach((id) => bump(theirs, id, !result.won));
+  });
+
+  const rank = (map) =>
+    [...map.entries()]
+      .map(([championId, row]) => ({ championId, ...row, winRate: row.games ? Math.round((row.wins / row.games) * 100) : 0 }))
+      .sort((a, b) => b.games - a.games || b.winRate - a.winRate);
+
+  return { games, wins, losses: games - wins, bySide, ours: rank(ours), theirs: rank(theirs) };
 }
 
 /* ---------- Strategy (questions for Claude + op.gg lobby scouting) ---------- */
@@ -2878,20 +2978,24 @@ function renderDraftTab() {
 
   renderDraftBoard();
   renderDraftChampionGrid();
+  renderDraftHistory();
+}
+
+// The draft is stored as one ordered list of champion ids; DRAFT_SEQUENCE is what says which
+// of them was whose ban and whose pick. Shared by the board and by saved results.
+function decomposeDraft(actions) {
+  const out = { blueBans: [], bluePicks: [], redBans: [], redPicks: [] };
+  (actions || []).forEach((championId, i) => {
+    const step = DRAFT_SEQUENCE[i];
+    if (!step) return;
+    const key = `${step.side}${step.type === "ban" ? "Bans" : "Picks"}`;
+    out[key].push(championId);
+  });
+  return out;
 }
 
 function renderDraftBoard() {
-  const blueBans = [];
-  const bluePicks = [];
-  const redBans = [];
-  const redPicks = [];
-
-  draftState.actions.forEach((championId, i) => {
-    const step = DRAFT_SEQUENCE[i];
-    if (!step) return;
-    const target = step.side === "blue" ? (step.type === "ban" ? blueBans : bluePicks) : step.type === "ban" ? redBans : redPicks;
-    target.push(championId);
-  });
+  const { blueBans, bluePicks, redBans, redPicks } = decomposeDraft(draftState.actions);
 
   renderDraftBanRow(els.blueBans, blueBans);
   renderDraftBanRow(els.redBans, redBans);
@@ -2963,6 +3067,147 @@ function renderDraftChampionGrid() {
       }
       els.draftChampionGrid.appendChild(node);
     });
+}
+
+/* ---------- Rendering: Draft history ---------- */
+
+function renderDraftHistory() {
+  if (!els.draftHistorySummary) return;
+
+  els.draftResultStatus.textContent = draftResultStatusText;
+  els.draftResultStatus.classList.toggle("error", draftResultStatusIsError);
+
+  els.draftHistorySummary.innerHTML = "";
+  els.draftHistoryList.innerHTML = "";
+
+  if (draftResults.length === 0) {
+    els.draftHistorySummary.innerHTML =
+      `<p class="empty-state">No drafts recorded yet. Play one out above, then say whether it won — after a handful of games this shows which picks are actually working.</p>`;
+    return;
+  }
+
+  const stats = draftResultStats();
+
+  const headline = document.createElement("div");
+  headline.className = "draft-record-line";
+  headline.textContent =
+    `${stats.wins}W-${stats.losses}L over ${stats.games} recorded draft${stats.games === 1 ? "" : "s"} · ` +
+    `blue ${stats.bySide.blue.wins}/${stats.bySide.blue.games} · red ${stats.bySide.red.wins}/${stats.bySide.red.games}`;
+  els.draftHistorySummary.appendChild(headline);
+
+  const columns = document.createElement("div");
+  columns.className = "draft-record-columns";
+  columns.appendChild(buildChampionRecordColumn("Our picks", stats.ours));
+  columns.appendChild(buildChampionRecordColumn("Played against us", stats.theirs, "Win rate is ours, so a low number is a champion that keeps beating us."));
+  els.draftHistorySummary.appendChild(columns);
+
+  draftResults.forEach((result) => els.draftHistoryList.appendChild(buildDraftResultCard(result)));
+}
+
+function buildChampionRecordColumn(title, rows, blurb) {
+  const col = document.createElement("div");
+  col.className = "draft-record-column";
+
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  col.appendChild(heading);
+
+  if (blurb) {
+    const note = document.createElement("p");
+    note.className = "flex-blurb";
+    note.textContent = blurb;
+    col.appendChild(note);
+  }
+
+  if (rows.length === 0) {
+    col.innerHTML += `<p class="empty-state">Nothing yet.</p>`;
+    return col;
+  }
+
+  rows.slice(0, 10).forEach((row) => {
+    const champ = championsById[row.championId];
+    const line = document.createElement("div");
+    line.className = "flex-row";
+
+    if (champ) {
+      const img = document.createElement("img");
+      img.src = champ.image;
+      img.alt = champ.name;
+      line.appendChild(img);
+    }
+
+    const name = document.createElement("span");
+    name.className = "flex-champ-name";
+    name.textContent = champ ? champ.name : row.championId;
+    line.appendChild(name);
+
+    const record = document.createElement("span");
+    record.className = "flex-label";
+    record.textContent = `${row.wins}-${row.games - row.wins} (${row.winRate}%)`;
+    line.appendChild(record);
+
+    col.appendChild(line);
+  });
+
+  return col;
+}
+
+function buildDraftResultCard(result) {
+  const card = document.createElement("div");
+  card.className = "draft-result-card " + (result.won ? "won" : "lost");
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "remove-note";
+  deleteBtn.textContent = "×";
+  deleteBtn.title = "Delete this result";
+  deleteBtn.addEventListener("click", () => {
+    if (confirm("Delete this recorded draft?")) deleteDraftResult(result.id);
+  });
+  card.appendChild(deleteBtn);
+
+  const header = document.createElement("div");
+  header.className = "draft-result-header";
+  const when = result.createdAt?.toMillis ? formatRelativeTime(result.createdAt.toMillis()) : "";
+  header.textContent =
+    `${result.won ? "Win" : "Loss"} on ${result.ourSide === "red" ? "red" : "blue"}` +
+    `${result.complete ? "" : " · partial draft"}${when ? ` · ${when}` : ""}`;
+  card.appendChild(header);
+
+  const parts = decomposeDraft(result.actions);
+  const ourSide = result.ourSide === "red" ? "red" : "blue";
+  const rows = [
+    ["Our picks", ourSide === "blue" ? parts.bluePicks : parts.redPicks],
+    ["Their picks", ourSide === "blue" ? parts.redPicks : parts.bluePicks],
+    ["Our bans", ourSide === "blue" ? parts.blueBans : parts.redBans],
+    ["Their bans", ourSide === "blue" ? parts.redBans : parts.blueBans],
+  ];
+
+  rows.forEach(([label, ids]) => {
+    if (!ids.length) return;
+    const row = document.createElement("div");
+    row.className = "draft-result-row";
+
+    const name = document.createElement("span");
+    name.className = "draft-result-row-label";
+    name.textContent = label;
+    row.appendChild(name);
+
+    ids.forEach((id) => {
+      const champ = championsById[id];
+      if (!champ) return;
+      const img = document.createElement("img");
+      img.src = champ.image;
+      img.alt = champ.name;
+      img.title = champ.name;
+      if (label.includes("bans")) img.className = "banned";
+      row.appendChild(img);
+    });
+
+    card.appendChild(row);
+  });
+
+  return card;
 }
 
 /* ---------- Rendering: Strategy tab ---------- */

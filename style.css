@@ -1955,6 +1955,120 @@ h3 {
   font-size: 0.72rem;
 }
 
+.draft-result-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 16px 0 6px;
+  padding: 10px 12px;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.draft-result-label {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+.draft-result-bar button {
+  font-weight: 600;
+}
+
+#saveDraftWinBtn {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#saveDraftLossBtn {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.draft-record-line {
+  color: var(--gold-bright);
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.draft-record-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.draft-record-column {
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+
+.draft-record-column h4 {
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+  color: var(--gold-bright);
+}
+
+.draft-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.draft-result-card {
+  position: relative;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 34px 10px 12px;
+}
+
+.draft-result-card.won {
+  border-left-color: var(--accent);
+}
+
+.draft-result-card.lost {
+  border-left-color: var(--danger);
+}
+
+.draft-result-header {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.draft-result-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.draft-result-row-label {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  min-width: 88px;
+}
+
+.draft-result-row img {
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+}
+
+.draft-result-row img.banned {
+  filter: grayscale(1);
+  opacity: 0.55;
+}
+
 .flex-section {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));

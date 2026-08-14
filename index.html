@@ -239,6 +239,19 @@
           </div>
         </div>
 
+        <div class="draft-result-bar">
+          <span class="draft-result-label">Record how this draft went</span>
+          <select id="draftOurSide">
+            <option value="blue">We were Blue</option>
+            <option value="red">We were Red</option>
+          </select>
+          <button id="saveDraftWinBtn" type="button">We won</button>
+          <button id="saveDraftLossBtn" type="button">We lost</button>
+        </div>
+        <div id="draftResultStatus" class="matches-status"></div>
+        <div id="draftHistorySummary" class="draft-history-summary"></div>
+        <div id="draftHistoryList" class="draft-history-list"></div>
+
         <input id="draftChampionSearch" type="text" placeholder="Search champions…" autocomplete="off" />
         <div id="draftChampionGrid" class="champion-grid all-grid"></div>
       </div>
