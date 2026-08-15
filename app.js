@@ -1391,7 +1391,7 @@ function strategyBriefText(entry) {
 
   const scout = parseScout(entry);
   if (scout) {
-    lines.push("", `Lobby scouted from Riot (last ${scout.matchesPerPlayer} games each):`);
+    lines.push("", `Lobby scouted from Riot (up to ${scout.sampleTarget || RANKED_SAMPLE_TARGET} ranked games each, ${scout.queues || "solo + flex"}):`);
     scout.players.forEach((p) => lines.push(`- ${formatScoutedPlayer(p)}`));
   }
 
