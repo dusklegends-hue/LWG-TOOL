@@ -2666,3 +2666,131 @@ h3 {
     display: none;
   }
 }
+
+/* ---------- Reviews tab ---------- */
+/* Long-form coach writeups. The list stays collapsed by default so a season's worth of
+   reviews is still scannable; opening one renders its Markdown into .markdown-body. */
+
+.add-review-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.add-review-form input[type="text"],
+.add-review-form textarea {
+  width: 100%;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 10px 12px;
+  font: inherit;
+}
+
+.add-review-form textarea {
+  min-height: 160px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.review-upload-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.review-upload-label {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+.review-file-status {
+  color: var(--accent);
+  font-size: 0.8rem;
+}
+
+.reviews-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.review-card {
+  position: relative;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 34px 12px 14px;
+}
+
+.review-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.review-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--gold-bright);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  flex: 1;
+}
+
+.review-toggle:hover .review-title { color: var(--gold); }
+
+.review-caret {
+  color: var(--gold);
+  font-size: 0.75rem;
+}
+
+.review-card-meta {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.review-body {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+/* Markdown output. Sized down a touch from the app's own headings so a review's structure
+   reads as content inside the page rather than competing with the page's chrome. */
+.markdown-body { line-height: 1.65; }
+.markdown-body h2 { font-size: 1.15rem; color: var(--gold-bright); margin: 18px 0 8px; }
+.markdown-body h3 { font-size: 1rem; color: var(--gold); margin: 16px 0 6px; }
+.markdown-body h4,
+.markdown-body h5 { font-size: 0.92rem; color: var(--gold); margin: 14px 0 6px; }
+.markdown-body p { margin: 8px 0; }
+.markdown-body ul,
+.markdown-body ol { margin: 8px 0; padding-left: 22px; }
+.markdown-body li { margin: 4px 0; }
+.markdown-body strong { color: var(--gold-bright); }
+.markdown-body code {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 0.85em;
+}
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 18px 0;
+}

@@ -223,6 +223,8 @@ let customGames = []; // populated live from Firestore's "customGames" collectio
 
 let notes = []; // populated live from Firestore's "notes" collection — shared across everyone
 let gameReviews = []; // review notes pinned to one logged custom — "notes" docs of type "gameReview"
+let reviews = []; // long-form coach/scrim writeups — "notes" docs of type "review"
+let expandedReviewIds = new Set(); // which reviews are opened out; collapsed by default so the list stays scannable
 let draftState = { blueTeamName: "Blue Team", redTeamName: "Red Team", actions: [] }; // shared live draft
 let draftChampionSearch = ""; // search text for the draft champion picker
 
@@ -474,6 +476,13 @@ function cacheEls() {
   els.newDraftNoteText = document.getElementById("newDraftNoteText");
   els.newDraftNoteAuthor = document.getElementById("newDraftNoteAuthor");
   els.draftNotesList = document.getElementById("draftNotesList");
+  els.addReviewForm = document.getElementById("addReviewForm");
+  els.newReviewTitle = document.getElementById("newReviewTitle");
+  els.newReviewFile = document.getElementById("newReviewFile");
+  els.reviewFileStatus = document.getElementById("reviewFileStatus");
+  els.newReviewText = document.getElementById("newReviewText");
+  els.newReviewAuthor = document.getElementById("newReviewAuthor");
+  els.reviewsList = document.getElementById("reviewsList");
   els.blueTeamNameInput = document.getElementById("blueTeamNameInput");
   els.redTeamNameInput = document.getElementById("redTeamNameInput");
   els.draftPhaseLabel = document.getElementById("draftPhaseLabel");
@@ -612,6 +621,41 @@ function bindStaticEvents() {
     els.newDraftNoteText.value = "";
   });
 
+  // Reading the file in the browser and dropping it into the textarea keeps the whole feature
+  // on Firestore — no Storage bucket, no upload URLs, and the text stays editable before it
+  // is posted. The title auto-fills from the filename only while it's still empty, so it
+  // never overwrites something already typed.
+  els.newReviewFile.addEventListener("change", async () => {
+    const file = els.newReviewFile.files?.[0];
+    if (!file) return;
+    if (file.size > 900_000) {
+      els.reviewFileStatus.textContent = "That file is too big (Firestore caps a document at 1MB).";
+      els.newReviewFile.value = "";
+      return;
+    }
+    try {
+      els.newReviewText.value = await file.text();
+      if (!els.newReviewTitle.value.trim()) {
+        els.newReviewTitle.value = file.name.replace(/\.(md|markdown|txt)$/i, "").replace(/[-_]+/g, " ");
+      }
+      els.reviewFileStatus.textContent = `Loaded ${file.name} — edit below if you like, then post.`;
+    } catch {
+      els.reviewFileStatus.textContent = "Could not read that file.";
+    }
+  });
+
+  els.addReviewForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const title = els.newReviewTitle.value.trim();
+    const text = els.newReviewText.value.trim();
+    if (!title || !text) return;
+    addReview(title, els.newReviewAuthor.value.trim(), text);
+    els.newReviewTitle.value = "";
+    els.newReviewText.value = "";
+    els.newReviewFile.value = "";
+    els.reviewFileStatus.textContent = "";
+  });
+
   els.blueTeamNameInput.addEventListener("change", () => {
     saveDraftState({ blueTeamName: els.blueTeamNameInput.value.trim() || "Blue Team" });
   });
@@ -700,6 +744,7 @@ function switchTab(tab) {
   document.getElementById("statsTab").classList.toggle("active", tab === "stats");
   document.getElementById("customsTab").classList.toggle("active", tab === "customs");
   document.getElementById("notesTab").classList.toggle("active", tab === "notes");
+  document.getElementById("reviewsTab").classList.toggle("active", tab === "reviews");
   document.getElementById("draftTab").classList.toggle("active", tab === "draft");
   document.getElementById("strategyTab").classList.toggle("active", tab === "strategy");
   if (tab === "overview") renderOverviewTab();
@@ -709,6 +754,7 @@ function switchTab(tab) {
   if (tab === "stats") renderStatsTab();
   if (tab === "customs") renderCustomsTab();
   if (tab === "notes") renderNotesTab();
+  if (tab === "reviews") renderReviewsTab();
   if (tab === "draft") renderDraftTab();
   if (tab === "strategy") renderStrategyTab();
 }
@@ -778,8 +824,10 @@ function handleNotesSnapshot(snapshot) {
   strategies = all.filter((n) => n.type === "strategy");
   draftResults = all.filter((n) => n.type === "draftResult");
   gameReviews = all.filter((n) => n.type === "gameReview");
+  reviews = all.filter((n) => n.type === "review");
 
   renderNotesTab();
+  renderReviewsTab();
   renderStrategyTab();
   renderDraftHistory();
   renderCustomsTab();
@@ -3495,6 +3543,183 @@ function renderNotesList(container, list) {
     card.append(deleteBtn, header, text);
     container.appendChild(card);
   });
+}
+
+/* ---------- Rendering: Reviews tab ---------- */
+
+/**
+ * Just enough Markdown to make a coach's writeup readable: headings, bold, italics, inline
+ * code, bullet lists, numbered lists and horizontal rules. Deliberately hand-rolled rather
+ * than pulling in a parser — this file has no build step and no bundler, and a dependency
+ * loaded off a CDN would be one more thing that can fail at page load.
+ *
+ * Everything is escaped BEFORE any markup is added, so a review can never inject HTML into
+ * the page. That ordering is the whole safety story here; don't reverse it.
+ */
+function renderMarkdown(source) {
+  const escape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const inline = (s) =>
+    escape(s)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+
+  const out = [];
+  let listType = null; // "ul" | "ol" | null
+  let paragraph = []; // consecutive plain lines waiting to be joined
+
+  // Markdown treats a run of non-blank lines as ONE paragraph. Writeups are usually
+  // hard-wrapped, so emitting a <p> per line turns every sentence into its own block --
+  // buffer them instead and join on the blank line that actually ends the paragraph.
+  const flushParagraph = () => {
+    if (paragraph.length > 0) {
+      out.push(`<p>${inline(paragraph.join(" "))}</p>`);
+      paragraph = [];
+    }
+  };
+
+  const closeList = () => {
+    flushParagraph();
+    if (listType) {
+      out.push(`</${listType}>`);
+      listType = null;
+    }
+  };
+
+  const openList = (type) => {
+    flushParagraph();
+    if (listType !== type) {
+      if (listType) out.push(`</${listType}>`);
+      out.push(`<${type}>`);
+      listType = type;
+    }
+  };
+
+  for (const rawLine of source.split("\n")) {
+    const line = rawLine.trimEnd();
+
+    if (!line.trim()) {
+      closeList();
+      continue;
+    }
+    if (/^---+$/.test(line.trim())) {
+      closeList();
+      out.push("<hr />");
+      continue;
+    }
+
+    const heading = /^(#{1,4})\s+(.*)$/.exec(line);
+    if (heading) {
+      closeList();
+      // Shifted down one level: the page already owns <h2>, so a review's "#" must not
+      // compete with it in the document outline.
+      const level = Math.min(heading[1].length + 1, 5);
+      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const bullet = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (bullet) {
+      openList("ul");
+      out.push(`<li>${inline(bullet[1])}</li>`);
+      continue;
+    }
+
+    const numbered = /^\s*\d+\.\s+(.*)$/.exec(line);
+    if (numbered) {
+      openList("ol");
+      out.push(`<li>${inline(numbered[1])}</li>`);
+      continue;
+    }
+
+    // A plain line continues whatever paragraph is being built. If a list is open, the
+    // paragraph starts fresh below it rather than being swallowed into the last <li>.
+    if (listType) closeList();
+    paragraph.push(line.trim());
+  }
+
+  closeList();
+  return out.join("\n");
+}
+
+function renderReviewsTab() {
+  if (!els.reviewsList) return;
+  els.reviewsList.innerHTML = "";
+
+  if (reviews.length === 0) {
+    els.reviewsList.innerHTML = `<p class="empty-state">No reviews yet. Upload or paste one above and everyone will see it.</p>`;
+    return;
+  }
+
+  reviews.forEach((review) => {
+    const card = document.createElement("article");
+    card.className = "review-card";
+
+    const header = document.createElement("div");
+    header.className = "review-card-header";
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "review-toggle";
+    const open = expandedReviewIds.has(review.id);
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.innerHTML = `<span class="review-caret">${open ? "▾" : "▸"}</span><span class="review-title"></span>`;
+    toggle.querySelector(".review-title").textContent = review.title || "Untitled review";
+    toggle.addEventListener("click", () => {
+      if (expandedReviewIds.has(review.id)) expandedReviewIds.delete(review.id);
+      else expandedReviewIds.add(review.id);
+      renderReviewsTab();
+    });
+
+    const meta = document.createElement("span");
+    meta.className = "review-card-meta";
+    const when = review.createdAt?.toMillis ? formatRelativeTime(review.createdAt.toMillis()) : "";
+    meta.textContent = [review.author || "Anonymous", when].filter(Boolean).join(" · ");
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "remove-note";
+    deleteBtn.textContent = "×";
+    deleteBtn.title = "Delete review";
+    deleteBtn.addEventListener("click", () => {
+      if (confirm(`Delete "${review.title || "this review"}"? This removes it for everyone.`)) {
+        deleteNote(review.id);
+      }
+    });
+
+    header.append(toggle, meta, deleteBtn);
+    card.append(header);
+
+    if (open) {
+      const body = document.createElement("div");
+      body.className = "review-body markdown-body";
+      body.innerHTML = renderMarkdown(review.text || "");
+      card.append(body);
+    }
+
+    els.reviewsList.appendChild(card);
+  });
+}
+
+// Same "notes" collection as everything else on purpose: the Firestore rules name each
+// collection explicitly, so a brand-new one is denied until someone edits them in the
+// console. A new *type* needs no rule change at all.
+async function addReview(title, author, text) {
+  const id = crypto.randomUUID();
+  try {
+    await setDoc(noteDoc(id), {
+      type: "review",
+      title,
+      author: author || null,
+      text,
+      createdAt: new Date(),
+    });
+    expandedReviewIds.add(id);
+  } catch (err) {
+    console.error(err);
+    alert("Could not post that review — check your connection and try again.");
+  }
 }
 
 /* ---------- Rendering: Draft tab ---------- */

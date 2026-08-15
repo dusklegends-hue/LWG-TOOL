@@ -9,7 +9,7 @@
 <!-- The ?v= tag pins each cached index.html to the exact app.js/style.css it shipped with,
      so a mid-deploy cache can never pair old markup with new code and break startup.
      Bump it on every deploy that touches app.js or style.css. -->
-<link rel="stylesheet" href="style.css?v=4" />
+<link rel="stylesheet" href="style.css?v=5" />
 </head>
 <body>
   <header class="topbar">
@@ -46,6 +46,7 @@
         <button class="tab-btn" data-tab="stats">Stats</button>
         <button class="tab-btn" data-tab="customs">Customs</button>
         <button class="tab-btn" data-tab="notes">Notes</button>
+        <button class="tab-btn" data-tab="reviews">Reviews</button>
         <button class="tab-btn" data-tab="draft">Draft</button>
         <button class="tab-btn" data-tab="strategy">Strategy</button>
       </nav>
@@ -219,6 +220,30 @@
         </div>
       </div>
 
+      <div id="reviewsTab" class="tab-panel">
+        <p class="matches-status">
+          Coach reviews and post-scrim writeups, in one place the whole team can read. Upload a
+          <code>.md</code> or <code>.txt</code> file, or paste the text straight in. Headings, bold and
+          bullet lists are formatted for you — everything else stays as written.
+        </p>
+
+        <form id="addReviewForm" class="add-review-form">
+          <input id="newReviewTitle" type="text" placeholder="Title — e.g. &quot;Scrim review, 15 Aug&quot;" autocomplete="off" required />
+          <div class="review-upload-row">
+            <label for="newReviewFile" class="review-upload-label">Upload a file</label>
+            <input id="newReviewFile" type="file" accept=".md,.txt,.markdown,text/plain,text/markdown" />
+            <span id="reviewFileStatus" class="review-file-status"></span>
+          </div>
+          <textarea id="newReviewText" placeholder="…or paste the review here" required></textarea>
+          <div class="add-note-form-row">
+            <input id="newReviewAuthor" type="text" placeholder="Who wrote it (optional)" autocomplete="off" />
+            <button type="submit">Post Review</button>
+          </div>
+        </form>
+
+        <div id="reviewsList" class="reviews-list"></div>
+      </div>
+
       <div id="draftTab" class="tab-panel">
         <div class="draft-team-names">
           <input id="blueTeamNameInput" type="text" class="draft-team-name-input blue" autocomplete="off" />
@@ -313,6 +338,6 @@
     </div>
   </template>
 
-  <script type="module" src="app.js?v=4"></script>
+  <script type="module" src="app.js?v=5"></script>
 </body>
 </html>
