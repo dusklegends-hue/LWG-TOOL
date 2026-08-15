@@ -1,12 +1,12 @@
 ﻿<#
-LWG Team Tool â€” Custom Game Logger
+LWG Team Tool - Custom Game Logger
 -----------------------------------
 Run this while the League client is open, before/during your custom games.
-Leave it running in a PowerShell window â€” it polls the client every few
+Leave it running in a PowerShell window - it polls the client every few
 seconds, and when a CUSTOM game finishes, it grabs the end-of-game stats
 for all 10 participants and uploads them to the shared roster's database.
 
-Only ONE person in the lobby needs to run this â€” the end-of-game data
+Only ONE person in the lobby needs to run this - the end-of-game data
 already includes every participant, not just yours.
 
 This talks only to:
@@ -15,13 +15,17 @@ This talks only to:
 It does not need your Riot API key and does not touch Riot's cloud API.
 
 NOTE FROM CLAUDE: the League client's local API (LCU) is not officially
-documented or guaranteed stable by Riot â€” this script is built from
+documented or guaranteed stable by Riot - this script is built from
 community knowledge of how it behaves, but I have no way to test it
 myself (no League client running in my environment). The first run
 should be treated as a test: watch the console output, and if a step
 fails or the captured data looks wrong, copy the console output and
 report it back so the script can be fixed.
 #>
+
+# -BackfillGameId: upload one already-finished custom by its game id, then exit. For when the
+# logger wasn't running (or a bug skipped the game) and the client is still open afterwards.
+param([long]$BackfillGameId = 0)
 
 $ErrorActionPreference = "Stop"
 $FirestoreBase = "https://firestore.googleapis.com/v1/projects/champ-pool-lwg/databases/(default)/documents"
@@ -87,7 +91,7 @@ function Invoke-Lcu($conn, $path) {
 }
 
 # The client leaves objective counters out of the payload entirely when they're zero, so a
-# missing field means "none taken" rather than "unknown" â€” coerce both to 0 instead of letting
+# missing field means "none taken" rather than "unknown" - coerce both to 0 instead of letting
 # a null reach Firestore, which would reject the write.
 function ConvertTo-FirestoreInt($value) {
   if ($null -eq $value) { return @{ integerValue = "0" } }
@@ -159,7 +163,7 @@ function Send-CustomGameToFirestore($gameId, $matchData) {
           ccScore             = ConvertTo-FirestoreInt $p.stats.timeCCingOthers
 
           # Economy and farm. Team-jungle vs enemy-jungle CS separates "farmed own camps"
-          # from "invaded and stole" — a jungler review can't be done without it.
+          # from "invaded and stole" - a jungler review can't be done without it.
           goldEarned          = ConvertTo-FirestoreInt $p.stats.goldEarned
           goldSpent           = ConvertTo-FirestoreInt $p.stats.goldSpent
           cs                  = ConvertTo-FirestoreInt ([int]$p.stats.totalMinionsKilled + [int]$p.stats.neutralMinionsKilled)
@@ -202,7 +206,7 @@ function Send-CustomGameToFirestore($gameId, $matchData) {
     }
   }
 
-  # Objective control: who took what, per side. The scoreboard already tells you who won â€”
+  # Objective control: who took what, per side. The scoreboard already tells you who won -
   # this tells you how, which is the half you can actually practise.
   $teamFields = @()
   foreach ($t in $matchData.teams) {
@@ -243,6 +247,17 @@ function Send-CustomGameToFirestore($gameId, $matchData) {
   } | ConvertTo-Json -Depth 20
 
   Invoke-RestMethod -Uri "$FirestoreBase/customGames?documentId=$gameId" -Method Post -Body $body -ContentType "application/json" | Out-Null
+}
+
+if ($BackfillGameId) {
+  $conn = Get-LcuConnection
+  if (-not $conn) { Write-Log "Backfill needs the League client open on the account that played the game."; exit 1 }
+  $matchData = Invoke-Lcu $conn "/lol-match-history/v1/games/$BackfillGameId"
+  if (-not $matchData -or -not $matchData.participants) { Write-Log "Could not read game $BackfillGameId from the client."; exit 1 }
+  if ($matchData.gameType -ne "CUSTOM_GAME") { Write-Log ("Game {0} is not a custom (gameType={1}) - refusing to log it." -f $BackfillGameId, $matchData.gameType); exit 1 }
+  Send-CustomGameToFirestore -gameId $BackfillGameId -matchData $matchData
+  Write-Log "Backfilled custom game $BackfillGameId - it should be on the Customs tab now."
+  exit 0
 }
 
 Write-Log "Custom Game Logger starting. Waiting for League client..."
@@ -289,19 +304,21 @@ while ($true) {
 
     Write-Log "Game ended (gameId=$capturedGameId, queueId=$capturedQueueId). Checking if it was a custom game..."
 
-    # queueId 0 = custom game. If this isn't 0 skip it (customs-only logging).
-    if ($capturedQueueId -ne 0) {
-      Write-Log "Not a custom game (queueId=$capturedQueueId) â€” skipping, this is already covered by the Matches/Stats tabs."
-      $loggedGameIds[[string]$capturedGameId] = $true
-      Start-Sleep -Seconds $PollSeconds
-      continue
-    }
-
     $matchData = Invoke-Lcu $conn "/lol-match-history/v1/games/$capturedGameId"
     if (-not $matchData -or -not $matchData.participants) {
       Write-Log "Could not read match history for gameId=$capturedGameId. Raw response:"
       Write-Log ($matchData | ConvertTo-Json -Depth 6 -Compress)
-      Write-Log "This likely means the LCU endpoint/field names differ from what this script expects â€” please report this output."
+      Write-Log "This likely means the LCU endpoint/field names differ from what this script expects - please report this output."
+      Start-Sleep -Seconds $PollSeconds
+      continue
+    }
+
+    # The match record's own gameType is the authority. Queue ids are NOT reliable for this:
+    # the client reported queueId 3100 for a plain tournament-draft custom on 2026-08-14, and
+    # the old `queueId -eq 0` check silently skipped a real scrim because of it.
+    if ($matchData.gameType -ne "CUSTOM_GAME") {
+      Write-Log ("Not a custom game (gameType={0}, queueId={1}) - skipping, ranked/normals are covered by the Matches/Stats tabs." -f $matchData.gameType, $capturedQueueId)
+      $loggedGameIds[[string]$capturedGameId] = $true
       Start-Sleep -Seconds $PollSeconds
       continue
     }
