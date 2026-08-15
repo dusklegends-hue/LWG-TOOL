@@ -47,14 +47,29 @@ function Write-Log($msg) {
 }
 
 function Get-LcuConnection {
-  $proc = Get-CimInstance Win32_Process -Filter "Name = 'LeagueClientUx.exe'" -ErrorAction SilentlyContinue
-  if (-not $proc) { return $null }
+  $port = $null
+  $token = $null
 
-  $cmdLine = $proc.CommandLine
-  if ($cmdLine -notmatch '--app-port=(\d+)') { return $null }
-  $port = $matches[1]
-  if ($cmdLine -notmatch '--remoting-auth-token=([\w-]+)') { return $null }
-  $token = $matches[1]
+  $proc = Get-CimInstance Win32_Process -Filter "Name = 'LeagueClientUx.exe'" -ErrorAction SilentlyContinue
+  if ($proc -and $proc.CommandLine) {
+    if ($proc.CommandLine -match '--app-port=(\d+)') { $port = $matches[1] }
+    if ($proc.CommandLine -match '--remoting-auth-token=([\w-]+)') { $token = $matches[1] }
+  }
+
+  # A client running elevated hides its command line from an unelevated shell. The lockfile
+  # (name:pid:port:password:protocol) carries the same port and token and is always readable.
+  if (-not ($port -and $token)) {
+    $lockfile = "C:\Riot Games\League of Legends\lockfile"
+    if ($proc -and (Test-Path $lockfile)) {
+      $parts = (Get-Content $lockfile -Raw -ErrorAction SilentlyContinue).Trim().Split(':')
+      if ($parts.Count -ge 5) {
+        $port = $parts[2]
+        $token = $parts[3]
+      }
+    }
+  }
+
+  if (-not ($port -and $token)) { return $null }
 
   $authHeader = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("riot:$token"))
   return [PSCustomObject]@{
