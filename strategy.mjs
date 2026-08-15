@@ -27,6 +27,7 @@ that is shown as plain text, so keep to those.
 
 import { readFileSync } from "node:fs";
 import {
+  CANDIDATE_WINDOW,
   RANKED_SAMPLE_TARGET,
   RATE_LIMIT_PER_WINDOW,
   configureMatchCache,
@@ -245,10 +246,20 @@ function guardRiotSpend(playerCount, target, args) {
 
 async function cmdScout(args) {
   const url = args.find((a) => !a.startsWith("--"));
-  if (!url) throw new Error("Usage: strategy.mjs scout <opgg-multisearch-url> [--games N] [--yes] [--id <strategyId>]");
+  if (!url)
+    throw new Error(
+      "Usage: strategy.mjs scout <opgg-multisearch-url> [--games N] [--window N] [--scope both|solo|flex|stack] [--yes] [--id <strategyId>]"
+    );
 
-  const gamesIndex = args.indexOf("--games");
-  const target = gamesIndex === -1 ? RANKED_SAMPLE_TARGET : Number(args[gamesIndex + 1]) || RANKED_SAMPLE_TARGET;
+  const flagValue = (name) => {
+    const i = args.indexOf(`--${name}`);
+    return i === -1 ? null : args[i + 1] || null;
+  };
+  const target = Number(flagValue("games")) || RANKED_SAMPLE_TARGET;
+  // Riot's match-list endpoint caps count at 100, and the proxy forwards no start cursor —
+  // 100 recent games per player is as deep as any scan can go.
+  const window = Math.min(Number(flagValue("window")) || CANDIDATE_WINDOW, 100);
+  const queueScope = flagValue("scope") || "both";
   const { players } = parseOpggMultiSearch(url);
   guardRiotSpend(players.length, target, args);
 
@@ -258,12 +269,14 @@ async function cmdScout(args) {
 
   const scout = await scoutLobby(url, await loadRoster(), {
     target,
+    window,
+    queueScope,
     onProgress: ({ index, total, riotId, stage, found }) => {
       if (stage === "start") process.stderr.write(`  [${index + 1}/${total}] ${riotId}…\n`);
       else if (stage === "scanning") process.stderr.write(`      ${found} ranked games so far\r`);
     },
   });
-  console.log(`Lobby poll — up to ${scout.sampleTarget} ranked games each (solo + flex)${scout.region ? `, ${scout.region}` : ""}:`);
+  console.log(`Lobby poll — up to ${scout.sampleTarget} ranked games each (${scout.queues})${scout.region ? `, ${scout.region}` : ""}:`);
   scout.players.forEach((p) => {
     console.log(`  ${formatScoutedPlayer(p)}`);
     formatScoutedPlayerProfile(p).forEach((l) => console.log(`      ${l}`));
