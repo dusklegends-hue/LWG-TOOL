@@ -799,6 +799,9 @@ function handleTeamCompsSnapshot(snapshot) {
 function handleCustomGamesSnapshot(snapshot) {
   customGames = snapshot.docs
     .map((d) => ({ id: d.id, ...d.data() }))
+    // The TLS Tourney Stat Tool writes into this same collection behind an org marker, because
+    // the security rules reject a new collection. Games belonging to another org are theirs.
+    .filter((g) => !g.org)
     .sort((a, b) => {
       const aTime = a.capturedAt?.seconds ?? 0;
       const bTime = b.capturedAt?.seconds ?? 0;
