@@ -9,8 +9,24 @@ for all 10 participants and uploads them to the shared roster's database.
 Only ONE person in the lobby needs to run this - the end-of-game data
 already includes every participant, not just yours.
 
+WORKS FOR A SPECTATOR TOO, by a different route. The script decides which
+one it is on its own, and you do not pass a flag:
+
+  - PLAYING: the end-of-game record is read from your own match history.
+    Rich - damage split, gold, vision, objectives, bans, items.
+  - SPECTATING: your account never played the game, so it is not in your
+    match history and that route cannot work. Instead the script reads the
+    live scoreboard out of the running game (port 2999), keeps the last
+    snapshot, and uploads it when the game closes. Lighter - K/D/A, CS,
+    level, items, spells, and objectives derived from the event feed, but
+    no damage or gold, because the live feed does not carry them.
+
+The two paths never both fire: a client either has an active player in the
+game (playing) or does not (spectating).
+
 This talks only to:
-  - 127.0.0.1 (your own League client, while it's running)
+  - 127.0.0.1 (your own League client and the running game, while open)
+  - ddragon.leagueoflegends.com (champion and spell names, no key needed)
   - firestore.googleapis.com (the shared database this app already uses)
 It does not need your Riot API key and does not touch Riot's cloud API.
 
@@ -29,6 +45,9 @@ param([long]$BackfillGameId = 0)
 
 $ErrorActionPreference = "Stop"
 $FirestoreBase = "https://firestore.googleapis.com/v1/projects/champ-pool-lwg/databases/(default)/documents"
+# The running game exposes a live scoreboard here. Same port whether you are playing or
+# spectating, which is what makes one script cover both.
+$LiveBase = "https://127.0.0.1:2999/liveclientdata"
 $PollSeconds = 5
 
 # --- TLS / self-signed cert handling (League's local API uses a self-signed cert) ---
@@ -88,6 +107,288 @@ function Invoke-Lcu($conn, $path) {
   } catch {
     return $null
   }
+}
+
+# The live endpoint needs no auth, and it simply is not there when no game is running - a
+# failure here is the normal "no game" case, not an error worth reporting.
+function Invoke-Live($path) {
+  try {
+    return Invoke-RestMethod -Uri "$LiveBase$path" -Method Get -TimeoutSec 5
+  } catch {
+    return $null
+  }
+}
+
+# The live feed names champions and summoner spells; Firestore and the web app want the
+# numeric ids. Data Dragon is a static CDN - no key, no rate limit.
+$script:StaticMaps = $null
+function Get-StaticMaps {
+  if ($script:StaticMaps) { return $script:StaticMaps }
+
+  $maps = @{ Champions = @{}; Spells = @{} }
+  try {
+    $versions = Invoke-RestMethod -Uri "https://ddragon.leagueoflegends.com/api/versions.json"
+    $v = $versions[0]
+
+    $champs = Invoke-RestMethod -Uri "https://ddragon.leagueoflegends.com/cdn/$v/data/en_US/champion.json"
+    foreach ($prop in $champs.data.PSObject.Properties) {
+      $c = $prop.Value
+      # Both spellings: the live feed sends the display name ("Kai'Sa"), other places use the
+      # id form ("Kaisa"), and matching either is free.
+      $maps.Champions[[string]$c.name] = [int]$c.key
+      $maps.Champions[[string]$c.id] = [int]$c.key
+    }
+
+    $spells = Invoke-RestMethod -Uri "https://ddragon.leagueoflegends.com/cdn/$v/data/en_US/summoner.json"
+    foreach ($prop in $spells.data.PSObject.Properties) {
+      $s = $prop.Value
+      $maps.Spells[[string]$s.name] = [int]$s.key
+    }
+  } catch {
+    Write-Log "Could not load champion/spell names from Data Dragon: $($_.Exception.Message)"
+    Write-Log "Spectator captures will still upload, with championId 0 where the name could not be resolved."
+  }
+
+  $script:StaticMaps = $maps
+  return $script:StaticMaps
+}
+
+function Get-TeamId($teamName) {
+  if ($teamName -eq "CHAOS") { return 200 }
+  return 100
+}
+
+# The live scoreboard has no damage, gold, healing or CC score - Riot does not put them in it.
+# The client may still hold them: it renders a full end-of-game screen for spectators, and that
+# screen's data has to come from somewhere. These are the candidates, in the order they would
+# be preferred. Nobody here can test them without a real spectated game, so rather than guess a
+# payload shape and write a converter against it, this probes each one and reports what came
+# back. One spectated scrim turns the question into an answer.
+function Test-SpectatorStatSources($conn, $gameId) {
+  if (-not $conn) { return }
+
+  $candidates = @(
+    @{ Name = "eog-stats-block"; Path = "/lol-end-of-game/v1/eog-stats-block" },
+    @{ Name = "eog-sco-block";   Path = "/lol-end-of-game/v1/eog-stats-block-sco" }
+  )
+  # Only worth asking about a specific game when the client gave us its id at all.
+  if ($gameId) {
+    $candidates += @{ Name = "replay-metadata"; Path = "/lol-replays/v1/metadata/$gameId" }
+    $candidates += @{ Name = "match-history";   Path = "/lol-match-history/v1/games/$gameId" }
+  }
+
+  Write-Log "--- probing for full spectator stats (report this block) ---"
+  foreach ($c in $candidates) {
+    $resp = Invoke-Lcu $conn $c.Path
+    if (-not $resp) {
+      Write-Log ("  {0}: no data" -f $c.Name)
+      continue
+    }
+
+    $json = $resp | ConvertTo-Json -Depth 4 -Compress
+    $hasDamage = $json -match 'DAMAGE|damageDealt|totalDamage'
+    $hasGold   = $json -match 'GOLD|goldEarned'
+    Write-Log ("  {0}: RESPONDED ({1} chars){2}{3}" -f $c.Name, $json.Length, $(if ($hasDamage) { " damage:yes" } else { " damage:no" }), $(if ($hasGold) { " gold:yes" } else { " gold:no" }))
+    Write-Log ("    top-level keys: {0}" -f (($resp.PSObject.Properties | Select-Object -First 15 | ForEach-Object { $_.Name }) -join ", "))
+  }
+  Write-Log "--- end probe ---"
+}
+
+# Objectives are not in the live scoreboard, but they are all in its event feed, so they can be
+# counted back out of it. Credit goes to the killer's team; when a turret falls to minions there
+# is no killer to look up, so the turret's own name decides it - Turret_T1_* are blue's
+# structures, so red took it.
+function Build-LiveTeams($live) {
+  $players = @($live.allPlayers)
+  $teams = @{}
+  foreach ($id in 100, 200) {
+    $teams[$id] = [ordered]@{
+      teamId = $id; firstBlood = $false; firstTower = $false; firstInhibitor = $false
+      firstBaron = $false; firstDragon = $false; firstRiftHerald = $false
+      towerKills = 0; inhibitorKills = 0; baronKills = 0; dragonKills = 0; riftHeraldKills = 0
+    }
+  }
+
+  $teamOf = {
+    param($name)
+    if (-not $name) { return $null }
+    $p = $players | Where-Object {
+      $_.summonerName -eq $name -or $_.riotId -eq $name -or $_.riotIdGameName -eq $name
+    } | Select-Object -First 1
+    if ($p) { return (Get-TeamId $p.team) }
+    return $null
+  }
+
+  foreach ($e in @($live.events.Events)) {
+    $killerTeam = & $teamOf $e.KillerName
+
+    switch ($e.EventName) {
+      "ChampionKill" {
+        if ($killerTeam -and -not ($teams[100].firstBlood -or $teams[200].firstBlood)) {
+          $teams[$killerTeam].firstBlood = $true
+        }
+      }
+      "FirstBlood" {
+        $recipientTeam = & $teamOf $e.Recipient
+        if ($recipientTeam) { $teams[$recipientTeam].firstBlood = $true }
+      }
+      "DragonKill" {
+        if ($killerTeam) {
+          $teams[$killerTeam].dragonKills++
+          if (-not ($teams[100].firstDragon -or $teams[200].firstDragon)) { $teams[$killerTeam].firstDragon = $true }
+        }
+      }
+      "BaronKill" {
+        if ($killerTeam) {
+          $teams[$killerTeam].baronKills++
+          if (-not ($teams[100].firstBaron -or $teams[200].firstBaron)) { $teams[$killerTeam].firstBaron = $true }
+        }
+      }
+      "HeraldKill" {
+        if ($killerTeam) {
+          $teams[$killerTeam].riftHeraldKills++
+          if (-not ($teams[100].firstRiftHerald -or $teams[200].firstRiftHerald)) { $teams[$killerTeam].firstRiftHerald = $true }
+        }
+      }
+      "TurretKilled" {
+        $credited = $killerTeam
+        if (-not $credited -and $e.TurretKilled -match '^Turret_T(\d)_') {
+          $credited = if ($matches[1] -eq "1") { 200 } else { 100 }
+        }
+        if ($credited) {
+          $teams[$credited].towerKills++
+          if (-not ($teams[100].firstTower -or $teams[200].firstTower)) { $teams[$credited].firstTower = $true }
+        }
+      }
+      "InhibKilled" {
+        $credited = $killerTeam
+        if (-not $credited -and $e.InhibKilled -match '^Barracks_T(\d)_') {
+          $credited = if ($matches[1] -eq "1") { 200 } else { 100 }
+        }
+        if ($credited) {
+          $teams[$credited].inhibitorKills++
+          if (-not ($teams[100].firstInhibitor -or $teams[200].firstInhibitor)) { $teams[$credited].firstInhibitor = $true }
+        }
+      }
+    }
+  }
+
+  return $teams
+}
+
+# Uploads a spectator capture. Deliberately the same document shape the match-history path
+# writes, so the Customs tab needs no special case - just fewer fields filled in, and a
+# source marker so nobody mistakes a light record for a lost one.
+function Send-LiveGameToFirestore($gameId, $live, $winningTeamId, $rawResult) {
+  $maps = Get-StaticMaps
+
+  $peopleResp = Invoke-RestMethod -Uri "$FirestoreBase/people"
+  $roster = @()
+  if ($peopleResp.documents) {
+    foreach ($doc in $peopleResp.documents) {
+      $id = ($doc.name -split '/')[-1]
+      $name = $doc.fields.name.stringValue
+      $riotId = $doc.fields.riotId.stringValue
+      if ($riotId) {
+        $roster += [PSCustomObject]@{ Id = $id; Name = $name; RiotId = $riotId.ToLower() }
+      }
+    }
+  }
+
+  $participantFields = @()
+  foreach ($p in @($live.allPlayers)) {
+    $displayName = if ($p.riotId) {
+      [string]$p.riotId
+    } elseif ($p.riotIdGameName -and $p.riotIdTagLine) {
+      "$($p.riotIdGameName)#$($p.riotIdTagLine)"
+    } else {
+      [string]$p.summonerName
+    }
+
+    $matchedPerson = $roster | Where-Object { $_.RiotId -eq $displayName.ToLower() } | Select-Object -First 1
+    $teamId = Get-TeamId $p.team
+    $championId = 0
+    if ($p.championName -and $maps.Champions.ContainsKey([string]$p.championName)) {
+      $championId = $maps.Champions[[string]$p.championName]
+    }
+
+    $spellId = {
+      param($spell)
+      if ($spell -and $spell.displayName -and $maps.Spells.ContainsKey([string]$spell.displayName)) {
+        return $maps.Spells[[string]$spell.displayName]
+      }
+      return 0
+    }
+
+    # Unknown result stays unknown. Writing false here would render as a defeat for all ten
+    # players, which is worse than saying nothing.
+    $winField = if ($null -eq $winningTeamId) { @{ nullValue = $null } } else { @{ booleanValue = ($teamId -eq $winningTeamId) } }
+
+    $participantFields += @{
+      mapValue = @{
+        fields = @{
+          summonerName      = @{ stringValue = $displayName }
+          championId        = ConvertTo-FirestoreInt $championId
+          kills             = ConvertTo-FirestoreInt $p.scores.kills
+          deaths            = ConvertTo-FirestoreInt $p.scores.deaths
+          assists           = ConvertTo-FirestoreInt $p.scores.assists
+          win               = $winField
+          teamId            = ConvertTo-FirestoreInt $teamId
+          cs                = ConvertTo-FirestoreInt $p.scores.creepScore
+          visionScore       = ConvertTo-FirestoreInt ([math]::Round([double]$p.scores.wardScore))
+          champLevel        = ConvertTo-FirestoreInt $p.level
+          position          = @{ stringValue = [string]$p.position }
+          spell1Id          = ConvertTo-FirestoreInt (& $spellId $p.summonerSpells.summonerSpellOne)
+          spell2Id          = ConvertTo-FirestoreInt (& $spellId $p.summonerSpells.summonerSpellTwo)
+          items             = @{ arrayValue = @{ values = @(
+                                @($p.items) | ForEach-Object { @{ integerValue = [string][int]$_.itemID } }
+                              ) } }
+          matchedPersonId   = if ($matchedPerson) { @{ stringValue = $matchedPerson.Id } } else { @{ nullValue = $null } }
+          matchedPersonName = if ($matchedPerson) { @{ stringValue = $matchedPerson.Name } } else { @{ nullValue = $null } }
+        }
+      }
+    }
+  }
+
+  $teamFields = @()
+  foreach ($t in (Build-LiveTeams $live).Values) {
+    $teamFields += @{
+      mapValue = @{
+        fields = @{
+          teamId          = ConvertTo-FirestoreInt  $t.teamId
+          firstBlood      = ConvertTo-FirestoreBool $t.firstBlood
+          firstTower      = ConvertTo-FirestoreBool $t.firstTower
+          firstInhibitor  = ConvertTo-FirestoreBool $t.firstInhibitor
+          firstBaron      = ConvertTo-FirestoreBool $t.firstBaron
+          firstDragon     = ConvertTo-FirestoreBool $t.firstDragon
+          firstRiftHerald = ConvertTo-FirestoreBool $t.firstRiftHerald
+          towerKills      = ConvertTo-FirestoreInt  $t.towerKills
+          inhibitorKills  = ConvertTo-FirestoreInt  $t.inhibitorKills
+          baronKills      = ConvertTo-FirestoreInt  $t.baronKills
+          dragonKills     = ConvertTo-FirestoreInt  $t.dragonKills
+          riftHeraldKills = ConvertTo-FirestoreInt  $t.riftHeraldKills
+          bans            = @{ arrayValue = @{ values = @() } }
+        }
+      }
+    }
+  }
+
+  $body = @{
+    fields = @{
+      gameId              = @{ integerValue = [string]$gameId }
+      capturedAt          = @{ timestampValue = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") }
+      gameDurationSeconds = ConvertTo-FirestoreInt ([math]::Round([double]$live.gameData.gameTime))
+      participants        = @{ arrayValue = @{ values = $participantFields } }
+      teams               = @{ arrayValue = @{ values = $teamFields } }
+      source              = @{ stringValue = "spectator" }
+      resultKnown         = ConvertTo-FirestoreBool ($null -ne $winningTeamId)
+      # Kept raw so the first real spectator capture tells us how to read it, instead of the
+      # script guessing whose side "Win" refers to when nobody is playing.
+      liveResultRaw       = @{ stringValue = [string]$rawResult }
+    }
+  } | ConvertTo-Json -Depth 20
+
+  Invoke-RestMethod -Uri "$FirestoreBase/customGames?documentId=$gameId" -Method Post -Body $body -ContentType "application/json" | Out-Null
 }
 
 # The client leaves objective counters out of the payload entirely when they're zero, so a
@@ -261,13 +562,65 @@ if ($BackfillGameId) {
 }
 
 Write-Log "Custom Game Logger starting. Waiting for League client..."
+Write-Log "Playing or spectating both work - the script picks the right route on its own."
 
 $loggedGameIds = @{}
 $lastPhase = $null
 $capturedGameId = $null
 $capturedQueueId = $null
 
+# Spectator state. The live snapshot is refreshed every poll while a game is up, because once
+# the game closes the endpoint is gone and whatever was last read is all there will ever be.
+$liveSnapshot = $null
+$liveIsSpectator = $false
+$liveWasUp = $false
+
 while ($true) {
+  # --- live game watch, independent of the client: a spectator never reaches EndOfGame, so
+  # the game closing is the only end-of-game signal that route gets.
+  $live = Invoke-Live "/allgamedata"
+  if ($live -and $live.allPlayers) {
+    if (-not $liveWasUp) {
+      # activePlayer exists only for someone actually in the game. Its absence is what marks
+      # this client as a spectator, and it is the whole basis for choosing a route.
+      $liveIsSpectator = -not ($live.activePlayer -and $live.activePlayer.summonerName)
+      Write-Log ("Live game detected - this client is {0}." -f $(if ($liveIsSpectator) { "SPECTATING (will capture the live scoreboard)" } else { "PLAYING (will use match history at the end)" }))
+      $liveWasUp = $true
+    }
+    $liveSnapshot = $live
+  } elseif ($liveWasUp) {
+    $liveWasUp = $false
+    $finished = $liveSnapshot
+    $liveSnapshot = $null
+
+    if ($liveIsSpectator -and $finished) {
+      $mode = [string]$finished.gameData.gameMode
+      $endEvent = @($finished.events.Events) | Where-Object { $_.EventName -eq "GameEnd" } | Select-Object -First 1
+      $rawResult = [string]$endEvent.Result
+
+      # No account to anchor "Win" to when spectating, so the winner is left unset rather than
+      # guessed. The Customs tab shows an unresolved game as such and lets you set the side.
+      $winningTeamId = $null
+
+      # A synthetic id, well above the range real game ids occupy, so it cannot collide with a
+      # match-history upload of the same scrim.
+      $syntheticId = [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+
+      Write-Log "Spectated game ended (mode=$mode, GameEnd result='$rawResult'). Uploading the live capture..."
+      # The live feed carries no damage, gold, healing or CC score. The client might still have
+      # them; this says whether it does, without risking the capture we already have.
+      try { Test-SpectatorStatSources $conn $capturedGameId } catch { Write-Log "Stat-source probe failed: $($_.Exception.Message)" }
+
+      try {
+        Send-LiveGameToFirestore -gameId $syntheticId -live $finished -winningTeamId $winningTeamId -rawResult $rawResult
+        Write-Log "Spectator capture $syntheticId uploaded - set the winning side on the Customs tab."
+        Write-Log "First spectator run: please report the GameEnd result above, so the winner can be read automatically next time."
+      } catch {
+        Write-Log "Failed to upload the spectator capture: $($_.Exception.Message)"
+      }
+    }
+  }
+
   $conn = Get-LcuConnection
   if (-not $conn) {
     Write-Log "League client not detected. Retrying in $PollSeconds s..."
