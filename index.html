@@ -9,13 +9,18 @@
 <!-- The ?v= tag pins each cached index.html to the exact app.js/style.css it shipped with,
      so a mid-deploy cache can never pair old markup with new code and break startup.
      Bump it on every deploy that touches app.js or style.css. -->
-<link rel="stylesheet" href="style.css?v=6" />
+<link rel="stylesheet" href="style.css?v=7" />
 </head>
 <body>
   <header class="topbar">
     <button id="mobileMenuBtn" type="button" class="mobile-menu-btn" aria-label="Toggle players list">☰</button>
     <h1>LWG Team Tool</h1>
     <span id="patchBadge" class="patch-badge">loading…</span>
+    <span id="authBox" class="auth-box">
+      <span id="authWho" class="auth-who"></span>
+      <button id="signInBtn" type="button" class="auth-btn">Sign in to edit</button>
+      <button id="signOutBtn" type="button" class="auth-btn hidden">Sign out</button>
+    </span>
   </header>
 
   <div id="loadingScreen" class="loading-screen">
@@ -49,7 +54,22 @@
         <button class="tab-btn" data-tab="reviews">Reviews</button>
         <button class="tab-btn" data-tab="draft">Draft</button>
         <button class="tab-btn" data-tab="strategy">Strategy</button>
+        <button class="tab-btn hidden" data-tab="team" id="teamTabBtn">Team</button>
       </nav>
+
+      <div id="teamTab" class="tab-panel">
+        <h2>Team access</h2>
+        <p class="team-access-note">
+          Google accounts listed here can edit the tool; everyone else can only view.
+          Only the admin account sees this tab or can change the list — enforced by the
+          Firestore rules, not just hidden in the page.
+        </p>
+        <form id="addTeamEmailForm" class="add-person-form">
+          <input id="newTeamEmail" type="email" placeholder="teammate@gmail.com" autocomplete="off" required />
+          <button type="submit">Add</button>
+        </form>
+        <ul id="teamEmailList" class="people-list"></ul>
+      </div>
 
       <div id="poolTab" class="tab-panel active">
         <div id="noPersonSelected" class="empty-state">
@@ -338,6 +358,6 @@
     </div>
   </template>
 
-  <script type="module" src="app.js?v=6"></script>
+  <script type="module" src="app.js?v=7"></script>
 </body>
 </html>

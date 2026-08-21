@@ -12,8 +12,9 @@ Pages; pushing to `main` deploys.
 
 - **Web app** (`index.html` / `app.js` / `style.css`) — vanilla JS, no
   build step. Firebase Firestore with `onSnapshot` live sync, so edits
-  appear on everyone's screen as they happen. Per-collection Firestore
-  security rules.
+  appear on everyone's screen as they happen. **Viewing is open; editing
+  requires a Google sign-in on the team allowlist** — enforced by the
+  per-collection rules in `firestore.rules`, not by the client.
 - **`riot.mjs`** — Riot API scouting: paste an op.gg multi-search link
   and it profiles every player in the lobby. Carries its own request
   budgeting and a match cache, because Riot's rate limits are real and

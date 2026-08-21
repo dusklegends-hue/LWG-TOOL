@@ -2794,3 +2794,63 @@ h3 {
   border-top: 1px solid var(--border);
   margin: 18px 0;
 }
+
+/* Auth box (top right). Sign-in gates edits only -- viewing never needs it. */
+.auth-box {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.auth-who {
+  font-size: 0.75rem;
+  color: var(--gold);
+  opacity: 0.85;
+}
+
+.auth-btn {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--gold);
+  background: transparent;
+  border: 1px solid var(--gold);
+  border-radius: 10px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.auth-btn:hover {
+  color: var(--bg);
+  background: var(--gold);
+}
+
+/* Team tab (admin only) */
+.team-access-note {
+  max-width: 60ch;
+  opacity: 0.8;
+  margin-bottom: 14px;
+}
+
+#teamEmailList li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+}
+
+#teamEmailList button {
+  font-size: 0.75rem;
+  color: var(--gold);
+  background: transparent;
+  border: 1px solid var(--gold);
+  border-radius: 10px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+#teamEmailList button:hover {
+  color: var(--bg);
+  background: var(--gold);
+}

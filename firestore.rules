@@ -1,0 +1,98 @@
+rules_version = '2';
+
+// LWG Team Tool — Firestore security rules
+// =========================================
+// Paste into Firebase console > Firestore Database > Rules > Publish
+// (project: champ-pool-lwg). Also enable the Google sign-in provider once:
+// console > Authentication > Sign-in method > Google > Enable.
+//
+// The shape of the problem: the tool is a public static site, so anyone can
+// find it — but the champion pools and tier ratings the coach drafts from
+// must not be editable by strangers. Reads stay open (nothing here is
+// secret; the site is useless without them). Every write needs a verified
+// sign-in that is either THE ADMIN or on the allowlist the admin manages
+// from the app's Team tab — so day-to-day access changes never touch this
+// file. One deliberate unauthenticated exception: the strategy CLI
+// (strategy.mjs) answers questions over plain REST, so unauthenticated
+// updates are allowed on exactly the three fields an answer touches, on
+// strategy notes only. A vandal's worst case is overwriting an answer's
+// text — never pools, ratings, rosters, or game records.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // The admin is fixed here, not in data, so a compromised allowlist can
+    // never mint a new admin. Must match ADMIN_EMAIL in app.js.
+    function isAdmin() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email == 'duskliberty@gmail.com';
+    }
+
+    // Editors: the admin, or anyone whose (verified) email has a doc in the
+    // allowlist collection — doc id IS the email, managed from the Team tab.
+    function isTeam() {
+      return isAdmin()
+        || (request.auth != null
+            && request.auth.token.email_verified == true
+            && exists(/databases/$(database)/documents/allowlist/$(request.auth.token.email)));
+    }
+
+    // Only the admin can see or change who is on the list.
+    match /allowlist/{email} {
+      allow read, write: if isAdmin();
+    }
+
+    // The only unauthenticated write in the project: strategy.mjs marking an
+    // existing strategy question answered. Field-capped and type-capped.
+    function onlyAnswersStrategy() {
+      return resource.data.type == 'strategy'
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['answer', 'answeredAt', 'status'])
+        && request.resource.data.answer is string
+        && request.resource.data.answer.size() <= 8000
+        && request.resource.data.status == 'answered';
+    }
+
+    match /notes/{noteId} {
+      allow read: if true;
+      allow create, delete: if isTeam();
+      allow update: if isTeam() || onlyAnswersStrategy();
+    }
+
+    match /people/{personId} {
+      allow read: if true;
+      allow write: if isTeam();
+    }
+
+    match /events/{eventId} {
+      allow read: if true;
+      allow write: if isTeam();
+    }
+
+    match /teamComps/{compId} {
+      allow read: if true;
+      allow write: if isTeam();
+    }
+
+    // Custom-game logging is currently paused (Riot LCU policy question).
+    // When it resumes, the logger runs on players' machines without a login,
+    // so this will need a shape-checked unauthenticated create like the TLS
+    // tool's looksLikeCapture() — deliberately not pre-opened while paused.
+    match /customGames/{gameId} {
+      allow read: if true;
+      allow write: if isTeam();
+    }
+
+    match /draftState/{docId} {
+      allow read: if true;
+      allow write: if isTeam();
+    }
+
+    // A collection not named above cannot be touched at all, which is what
+    // stops the project being used as free storage.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

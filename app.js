@@ -3,11 +3,18 @@ import {
   getFirestore,
   collection,
   doc,
-  setDoc,
-  updateDoc,
-  deleteDoc,
+  setDoc as fsSetDoc,
+  updateDoc as fsUpdateDoc,
+  deleteDoc as fsDeleteDoc,
   onSnapshot,
 } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
+import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signOut,
+  onAuthStateChanged,
+} from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
 import {
   RANKED_SAMPLE_TARGET,
   RATE_LIMIT_PER_WINDOW,
@@ -38,12 +45,37 @@ const firebaseConfig = {
 
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
+const auth = getAuth(firebaseApp);
+let currentUser = null;
+
+// The one account that manages who else can edit (the Team tab). Must match
+// isAdmin() in firestore.rules — the rules are the enforcement; this constant
+// only decides what the page shows.
+const ADMIN_EMAIL = "duskliberty@gmail.com";
+
+// Writes go through these wrappers so a permission-denied from the Firestore
+// rules turns into one plain explanation instead of a silent console error.
+// The rules are the actual gate; onSnapshot reverts any optimistic local echo
+// of a refused write, so swallowing the denial cannot leave phantom state.
+function explainDenied(err) {
+  if (err && err.code === "permission-denied") {
+    alert(currentUser
+      ? `${currentUser.email} is signed in but not on the team list in the Firestore rules.`
+      : "This tool is read-only until you sign in (top right) with a team account.");
+    return;
+  }
+  throw err;
+}
+const setDoc = (...args) => fsSetDoc(...args).catch(explainDenied);
+const updateDoc = (...args) => fsUpdateDoc(...args).catch(explainDenied);
+const deleteDoc = (...args) => fsDeleteDoc(...args).catch(explainDenied);
 const peopleCol = collection(db, "people");
 const eventsCol = collection(db, "events");
 const teamCompsCol = collection(db, "teamComps");
 const customGamesCol = collection(db, "customGames");
 const notesCol = collection(db, "notes");
 const draftStateDocRef = doc(db, "draftState", "current");
+const allowlistCol = collection(db, "allowlist");
 
 function personDoc(id) {
   return doc(peopleCol, id);
@@ -403,9 +435,94 @@ async function init() {
   els.app.classList.remove("hidden");
 }
 
+function wireAuth() {
+  els.signInBtn.addEventListener("click", async () => {
+    try {
+      await signInWithPopup(auth, new GoogleAuthProvider());
+    } catch (err) {
+      if (err.code !== "auth/popup-closed-by-user") alert(`Sign-in failed: ${err.message}`);
+    }
+  });
+  els.signOutBtn.addEventListener("click", () => signOut(auth).catch((err) => console.error(err)));
+
+  els.addTeamEmailForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const email = els.newTeamEmail.value.trim().toLowerCase();
+    if (!email) return;
+    // Doc id IS the email — that is what the rules' exists() check looks up.
+    await setDoc(doc(allowlistCol, email), { addedBy: currentUser?.email || null, addedAt: new Date() });
+    els.newTeamEmail.value = "";
+  });
+
+  // Whether an account may edit is decided by the Firestore rules, not here.
+  // The page only reflects signed-in vs not; a signed-in account that is not
+  // on the team list simply has its writes refused (and explainDenied says so).
+  onAuthStateChanged(auth, (user) => {
+    currentUser = user || null;
+    const signedIn = !!currentUser;
+    els.signInBtn.classList.toggle("hidden", signedIn);
+    els.signOutBtn.classList.toggle("hidden", !signedIn);
+    els.authWho.textContent = signedIn ? currentUser.email || "signed in" : "";
+    els.authBox.title = signedIn ? "" : "Viewing is open; editing needs a team sign-in.";
+
+    const isAdmin = signedIn && currentUser.email === ADMIN_EMAIL;
+    els.teamTabBtn.classList.toggle("hidden", !isAdmin);
+    if (isAdmin && !stopAllowlistWatch) {
+      // Subscribe only as admin: the rules refuse this read to anyone else.
+      stopAllowlistWatch = onSnapshot(allowlistCol, (snap) => {
+        teamEmails = snap.docs.map((d) => d.id).sort();
+        renderTeamTab();
+      }, (err) => console.error("allowlist watch:", err));
+    } else if (!isAdmin && stopAllowlistWatch) {
+      stopAllowlistWatch();
+      stopAllowlistWatch = null;
+      teamEmails = [];
+      renderTeamTab();
+      // Don't leave a hidden tab as the active panel.
+      if (document.getElementById("teamTab").classList.contains("active")) switchTab("pool");
+    }
+  });
+}
+
+let teamEmails = [];
+let stopAllowlistWatch = null;
+
+function renderTeamTab() {
+  els.teamEmailList.innerHTML = "";
+  for (const email of teamEmails) {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.textContent = email;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      if (confirm(`Remove ${email}? They can still view, but no longer edit.`)) {
+        deleteDoc(doc(allowlistCol, email));
+      }
+    });
+    li.append(name, remove);
+    els.teamEmailList.appendChild(li);
+  }
+  if (!teamEmails.length) {
+    const li = document.createElement("li");
+    li.textContent = "Nobody on the list yet — only the admin account can edit.";
+    els.teamEmailList.appendChild(li);
+  }
+}
+
 function cacheEls() {
   els.app = document.getElementById("app");
   els.patchBadge = document.getElementById("patchBadge");
+  els.authBox = document.getElementById("authBox");
+  els.authWho = document.getElementById("authWho");
+  els.signInBtn = document.getElementById("signInBtn");
+  els.signOutBtn = document.getElementById("signOutBtn");
+  els.teamTabBtn = document.getElementById("teamTabBtn");
+  els.addTeamEmailForm = document.getElementById("addTeamEmailForm");
+  els.newTeamEmail = document.getElementById("newTeamEmail");
+  els.teamEmailList = document.getElementById("teamEmailList");
+  wireAuth();
   els.mobileMenuBtn = document.getElementById("mobileMenuBtn");
   els.sidebar = document.getElementById("sidebar");
   els.sidebarOverlay = document.getElementById("sidebarOverlay");
@@ -747,6 +864,7 @@ function switchTab(tab) {
   document.getElementById("reviewsTab").classList.toggle("active", tab === "reviews");
   document.getElementById("draftTab").classList.toggle("active", tab === "draft");
   document.getElementById("strategyTab").classList.toggle("active", tab === "strategy");
+  document.getElementById("teamTab").classList.toggle("active", tab === "team");
   if (tab === "overview") renderOverviewTab();
   if (tab === "calendar") renderCalendarTab();
   if (tab === "comps") renderCompsTab();
