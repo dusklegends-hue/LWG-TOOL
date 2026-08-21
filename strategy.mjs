@@ -110,7 +110,43 @@ function fromFields(fields) {
   return Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, fromValue(v)]));
 }
 
+/* ---------- Auth ----------
+Reads are team-private now (Firestore rules, 2026-08-21), so the CLI signs in
+as a dedicated bot account (Firebase email/password provider) whose uid the
+rules trust. Credentials live in .cli-auth.json beside this script —
+GITIGNORED on purpose: a push deploys this directory, so they must never be
+tracked. Shape: {"email":"...","password":"..."}. The API key below is the
+same public web key the site ships; secrecy lives in the password + rules. */
+const API_KEY = "AIzaSyDXoWE7c9CgXqDfCaHBfQJhoKkcU5AUv88";
+let cachedIdToken = null;
+
+async function idToken() {
+  if (cachedIdToken) return cachedIdToken;
+  let creds;
+  try {
+    creds = JSON.parse(readFileSync(new URL(".cli-auth.json", import.meta.url), "utf8"));
+  } catch {
+    throw new Error(
+      'The tool is team-private now and this CLI needs its bot login: create .cli-auth.json next to strategy.mjs containing {"email":"...","password":"..."}.'
+    );
+  }
+  const res = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: creds.email, password: creds.password, returnSecureToken: true }),
+    }
+  );
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`CLI sign-in failed: ${body?.error?.message || res.status}`);
+  cachedIdToken = body.idToken;
+  return cachedIdToken;
+}
+
 async function firestore(path, options = {}) {
+  const token = await idToken();
+  options = { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${token}` } };
   const res = await fetch(`${BASE}${path}`, options);
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {

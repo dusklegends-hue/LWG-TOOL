@@ -2854,3 +2854,11 @@ h3 {
   color: var(--bg);
   background: var(--gold);
 }
+
+/* Lock screen note (signed-out state) */
+.lock-note {
+  font-size: 1.05rem;
+  opacity: 0.85;
+  max-width: 46ch;
+  text-align: center;
+}

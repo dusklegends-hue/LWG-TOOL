@@ -278,12 +278,31 @@ if (firebaseConfig.apiKey === "REPLACE_ME") {
   init();
 }
 
+let dataStarted = false;
+let resolveAuthReady;
+const authReady = new Promise((r) => { resolveAuthReady = r; });
+const LOADING_HTML = '<div class="spinner"></div><p>Loading champion data from Riot Data Dragon…</p>';
+
+function showLockScreen() {
+  const screen = document.getElementById("loadingScreen");
+  screen.classList.remove("hidden");
+  screen.innerHTML =
+    '<p class="lock-note">🔒 This tool is team-private. Sign in (top right) with a team account to load it.</p>';
+  els.app.classList.add("hidden");
+}
+
 async function init() {
   cacheEls();
   loadLocalUIState();
   configureMatchCache(localStorageMatchCache());
   bindStaticEvents();
+  // Data loads only after sign-in — reads are team-private in the Firestore
+  // rules, so subscribing signed-out would only collect permission errors.
+  // startData() is kicked off by the auth listener in wireAuth().
+  await authReady;
+}
 
+async function startData() {
   let championDataError = null;
   let peopleSnapshotError = null;
   let eventsSnapshotError = null;
@@ -403,8 +422,12 @@ async function init() {
     notesSnapshotError ||
     draftStateSnapshotError
   ) {
-    document.getElementById("loadingScreen").innerHTML =
-      `<p style="color:#e05252">${championDataError ? "Failed to load champion data." : "Failed to connect to the shared roster."} Check your internet connection and reload.</p>`;
+    const snapErrs = [peopleSnapshotError, eventsSnapshotError, teamCompsSnapshotError,
+      customGamesSnapshotError, notesSnapshotError, draftStateSnapshotError];
+    const denied = snapErrs.some((e) => e && e.code === "permission-denied");
+    document.getElementById("loadingScreen").innerHTML = denied
+      ? `<p style="color:#e05252">${currentUser?.email || "This account"} is signed in but not on the team list. Ask the admin to add you on the Team tab, then reload.</p>`
+      : `<p style="color:#e05252">${championDataError ? "Failed to load champion data." : "Failed to connect to the shared roster."} Check your internet connection and reload.</p>`;
     console.error(
       championDataError ||
         peopleSnapshotError ||
@@ -464,6 +487,20 @@ function wireAuth() {
     els.signOutBtn.classList.toggle("hidden", !signedIn);
     els.authWho.textContent = signedIn ? currentUser.email || "signed in" : "";
     els.authBox.title = signedIn ? "" : "Viewing is open; editing needs a team sign-in.";
+
+    // First auth event decides whether the page shows the lock screen or
+    // starts loading; later sign-outs tear everything down via reload, which
+    // is the reliable way to drop six live snapshots and all their state.
+    if (resolveAuthReady) { resolveAuthReady(); resolveAuthReady = null; }
+    if (signedIn && !dataStarted) {
+      dataStarted = true;
+      document.getElementById("loadingScreen").innerHTML = LOADING_HTML;
+      startData();
+    } else if (!signedIn && dataStarted) {
+      location.reload();
+    } else if (!signedIn) {
+      showLockScreen();
+    }
 
     const isAdmin = signedIn && currentUser.email === ADMIN_EMAIL;
     els.teamTabBtn.classList.toggle("hidden", !isAdmin);

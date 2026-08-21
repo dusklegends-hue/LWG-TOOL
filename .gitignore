@@ -6,3 +6,7 @@
 # players' Riot IDs per game — a push deploys this directory, so it must never be
 # tracked.
 customs-firestore-export-*.json
+
+# CLI bot credentials for strategy.mjs — a push deploys this directory,
+# so these must never be tracked.
+.cli-auth.json

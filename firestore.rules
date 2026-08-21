@@ -1,38 +1,47 @@
 rules_version = '2';
 
-// LWG Team Tool — Firestore security rules
-// =========================================
+// LWG Team Tool — Firestore security rules (v3: reads are team-private)
+// ======================================================================
 // Paste into Firebase console > Firestore Database > Rules > Publish
-// (project: champ-pool-lwg). Also enable the Google sign-in provider once:
-// console > Authentication > Sign-in method > Google > Enable.
+// (project: champ-pool-lwg).
 //
-// The shape of the problem: the tool is a public static site, so anyone can
-// find it — but the champion pools and tier ratings the coach drafts from
-// must not be editable by strangers. Reads stay open (nothing here is
-// secret; the site is useless without them). Every write needs a verified
-// sign-in that is either THE ADMIN or on the allowlist the admin manages
-// from the app's Team tab — so day-to-day access changes never touch this
-// file. One deliberate unauthenticated exception: the strategy CLI
-// (strategy.mjs) answers questions over plain REST, so unauthenticated
-// updates are allowed on exactly the three fields an answer touches, on
-// strategy notes only. A vandal's worst case is overwriting an answer's
-// text — never pools, ratings, rosters, or game records.
+// One-time console setup this version depends on:
+//   Authentication > Sign-in method > Google > Enable          (people)
+//   Authentication > Sign-in method > Email/Password > Enable  (the CLI bot)
+//
+// v3 closes READS as well as writes: champion pools, tier ratings, and
+// strategy notes are competitive intelligence — an opposing team reading
+// them is as bad as a vandal editing them. Nothing about this tool needs a
+// public audience. Access = the admin, the allowlist the admin manages
+// from the app's Team tab, or the strategy CLI's dedicated bot account
+// (pinned by uid, so a stranger signing up an account can never claim it).
+//
+// CLI_BOT_UID: replace the placeholder with the bot's real uid once the
+// account exists — until then the CLI simply stays locked out; nothing
+// else is affected.
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // The admin is fixed here, not in data, so a compromised allowlist can
-    // never mint a new admin. Must match ADMIN_EMAIL in app.js.
+    // Fixed here, not in data, so a compromised allowlist can never mint a
+    // new admin. Must match ADMIN_EMAIL in app.js.
     function isAdmin() {
       return request.auth != null
         && request.auth.token.email_verified == true
         && request.auth.token.email == 'duskliberty@gmail.com';
     }
 
-    // Editors: the admin, or anyone whose (verified) email has a doc in the
-    // allowlist collection — doc id IS the email, managed from the Team tab.
+    // The strategy CLI's bot account. uid, not email: email/password
+    // accounts are never email-verified, and anyone can sign UP an email —
+    // but a uid belongs to exactly one existing account.
+    function isCli() {
+      return request.auth != null
+        && request.auth.uid == 'CLI_BOT_UID_PENDING';
+    }
+
     function isTeam() {
       return isAdmin()
+        || isCli()
         || (request.auth != null
             && request.auth.token.email_verified == true
             && exists(/databases/$(database)/documents/allowlist/$(request.auth.token.email)));
@@ -43,54 +52,34 @@ service cloud.firestore {
       allow read, write: if isAdmin();
     }
 
-    // The only unauthenticated write in the project: strategy.mjs marking an
-    // existing strategy question answered. Field-capped and type-capped.
-    function onlyAnswersStrategy() {
-      return resource.data.type == 'strategy'
-        && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['answer', 'answeredAt', 'status'])
-        && request.resource.data.answer is string
-        && request.resource.data.answer.size() <= 8000
-        && request.resource.data.status == 'answered';
-    }
-
     match /notes/{noteId} {
-      allow read: if true;
-      allow create, delete: if isTeam();
-      allow update: if isTeam() || onlyAnswersStrategy();
+      allow read, write: if isTeam();
     }
 
     match /people/{personId} {
-      allow read: if true;
-      allow write: if isTeam();
+      allow read, write: if isTeam();
     }
 
     match /events/{eventId} {
-      allow read: if true;
-      allow write: if isTeam();
+      allow read, write: if isTeam();
     }
 
     match /teamComps/{compId} {
-      allow read: if true;
-      allow write: if isTeam();
+      allow read, write: if isTeam();
     }
 
-    // Custom-game logging is currently paused (Riot LCU policy question).
-    // When it resumes, the logger runs on players' machines without a login,
-    // so this will need a shape-checked unauthenticated create like the TLS
-    // tool's looksLikeCapture() — deliberately not pre-opened while paused.
+    // Custom-game logging is paused (Riot LCU policy question). When it
+    // resumes, the logger runs on players' machines and will need its own
+    // credential or a shape-checked create — decide then, not pre-opened now.
     match /customGames/{gameId} {
-      allow read: if true;
-      allow write: if isTeam();
+      allow read, write: if isTeam();
     }
 
     match /draftState/{docId} {
-      allow read: if true;
-      allow write: if isTeam();
+      allow read, write: if isTeam();
     }
 
-    // A collection not named above cannot be touched at all, which is what
-    // stops the project being used as free storage.
+    // A collection not named above cannot be touched at all.
     match /{document=**} {
       allow read, write: if false;
     }
