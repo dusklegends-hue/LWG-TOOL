@@ -12,6 +12,7 @@ import {
   getAuth,
   GoogleAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   onAuthStateChanged,
 } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
@@ -463,7 +464,13 @@ function wireAuth() {
     try {
       await signInWithPopup(auth, new GoogleAuthProvider());
     } catch (err) {
-      if (err.code !== "auth/popup-closed-by-user") alert(`Sign-in failed: ${err.message}`);
+      if (err.code === "auth/popup-blocked" || err.code === "auth/cancelled-popup-request") {
+        // Phones routinely refuse popups; the redirect flow works everywhere.
+        await signInWithRedirect(auth, new GoogleAuthProvider())
+          .catch((e) => alert(`Sign-in failed: ${e.message}`));
+      } else if (err.code !== "auth/popup-closed-by-user") {
+        alert(`Sign-in failed: ${err.message}`);
+      }
     }
   });
   els.signOutBtn.addEventListener("click", () => signOut(auth).catch((err) => console.error(err)));
