@@ -1,2 +1,8 @@
 .match-cache.json
 .riot-budget.json
+
+# Local archive of scrim data pulled back out of Firestore while custom-game
+# logging is paused for the Riot LCU third-party policy question. Holds ten real
+# players' Riot IDs per game — a push deploys this directory, so it must never be
+# tracked.
+customs-firestore-export-*.json
