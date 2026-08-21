@@ -596,7 +596,6 @@ function cacheEls() {
   els.prevMonthBtn = document.getElementById("prevMonthBtn");
   els.nextMonthBtn = document.getElementById("nextMonthBtn");
   els.calendarGrid = document.getElementById("calendarGrid");
-  els.attendanceSection = document.getElementById("attendanceSection");
   els.dayDetailPanel = document.getElementById("dayDetailPanel");
   els.dayDetailTitle = document.getElementById("dayDetailTitle");
   els.dayDetailEvents = document.getElementById("dayDetailEvents");
@@ -2282,98 +2281,7 @@ function formatEventTimeLocal(ev) {
   }
 }
 
-// Scrim teams die of attendance, not of draft. The calendar records who ticked the box for an
-// event; nobody ever reads back who stopped ticking it. Only events already in the past count —
-// an upcoming Saturday nobody has confirmed yet is not a no-show.
-function attendanceHistory() {
-  const todayKey = formatDateKey(new Date());
-  const past = events
-    .filter((ev) => ev.date && ev.date < todayKey)
-    .sort((a, b) => a.date.localeCompare(b.date));
-
-  const rows = state.people.map((person) => {
-    const attended = past.filter((ev) => (ev.attendees || []).includes(person.id)).length;
-
-    // Consecutive misses counting back from the most recent event. A season-long average hides
-    // someone who came to everything in April and nothing since; this is the number that
-    // actually predicts whether they'll turn up on Saturday.
-    let missStreak = 0;
-    for (let i = past.length - 1; i >= 0; i--) {
-      if ((past[i].attendees || []).includes(person.id)) break;
-      missStreak++;
-    }
-
-    return { person, attended, total: past.length, rate: past.length ? attended / past.length : 0, missStreak };
-  });
-
-  rows.sort((a, b) => a.rate - b.rate || a.person.name.localeCompare(b.person.name));
-  return { past, rows };
-}
-
-function renderAttendanceSection() {
-  els.attendanceSection.innerHTML = "";
-  if (state.people.length === 0) return;
-
-  const { past, rows } = attendanceHistory();
-
-  const heading = document.createElement("h3");
-  heading.textContent = "Attendance";
-  els.attendanceSection.appendChild(heading);
-
-  if (past.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "empty-state";
-    empty.textContent = "No past events yet — attendance shows up once an event date has gone by.";
-    els.attendanceSection.appendChild(empty);
-    return;
-  }
-
-  const sub = document.createElement("p");
-  sub.className = "attendance-sub";
-  sub.textContent = `Across ${past.length} past event${past.length === 1 ? "" : "s"} · lowest turnout first`;
-  els.attendanceSection.appendChild(sub);
-
-  const list = document.createElement("div");
-  list.className = "attendance-list";
-
-  rows.forEach((row) => {
-    const item = document.createElement("div");
-    item.className = "attendance-row";
-
-    const name = document.createElement("div");
-    name.className = "attendance-name";
-    name.textContent = row.person.name;
-
-    const bar = document.createElement("div");
-    bar.className = "attendance-bar";
-    const fill = document.createElement("div");
-    fill.className = "attendance-bar-fill";
-    fill.style.width = `${Math.round(row.rate * 100)}%`;
-    if (row.rate < 0.5) fill.classList.add("low");
-    bar.appendChild(fill);
-
-    const count = document.createElement("div");
-    count.className = "attendance-count";
-    count.textContent = `${row.attended}/${row.total} (${Math.round(row.rate * 100)}%)`;
-
-    item.append(name, bar, count);
-
-    if (row.missStreak >= 2) {
-      const streak = document.createElement("span");
-      streak.className = "attendance-streak";
-      streak.textContent = `missed last ${row.missStreak}`;
-      item.appendChild(streak);
-    }
-
-    list.appendChild(item);
-  });
-
-  els.attendanceSection.appendChild(list);
-}
-
 function renderCalendarTab() {
-  renderAttendanceSection();
-
   const year = calendarViewDate.getFullYear();
   const month = calendarViewDate.getMonth();
   els.calendarMonthLabel.textContent = calendarViewDate.toLocaleDateString(undefined, {
